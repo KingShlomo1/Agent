@@ -1,10 +1,465 @@
-<!DOCTYPE html>
+// FamilyTripAI — Cloudflare Worker
+// Serves the SPA HTML and handles /chat by calling Groq API directly.
+
+// ─── Tool implementations (all async, using fetch) ───────────────────────────
+
+async function toolWebSearch(query, maxResults = 5) {
+  try {
+    const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
+    const res = await fetch(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
+    const data = await res.json();
+
+    const lines = [];
+    if (data.AbstractText) {
+      lines.push(`${data.AbstractText}`);
+      if (data.AbstractURL) lines.push(`Source: ${data.AbstractURL}`);
+    }
+    const topics = (data.RelatedTopics || []).slice(0, maxResults);
+    for (const t of topics) {
+      if (t.Text) {
+        lines.push(`\n${t.Text}`);
+        if (t.FirstURL) lines.push(`Link: ${t.FirstURL}`);
+      } else if (t.Topics) {
+        for (const sub of t.Topics.slice(0, 2)) {
+          if (sub.Text) lines.push(`\n${sub.Text}`);
+        }
+      }
+    }
+    return lines.length > 0
+      ? lines.join('\n')
+      : `No instant results for: ${query}. Try searching at https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
+  } catch (e) {
+    return `Web search error: ${e.message}`;
+  }
+}
+
+async function toolWeather(location, days = 7) {
+  try {
+    const geoUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
+    const geoRes = await fetch(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
+    const geoData = await geoRes.json();
+    if (!geoData || geoData.length === 0) return `Location "${location}" not found.`;
+
+    const { lat, lon, display_name } = geoData[0];
+    const forecastDays = Math.min(parseInt(days) || 7, 16);
+    const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto&forecast_days=${forecastDays}`;
+    const wRes = await fetch(weatherUrl);
+    const wData = await wRes.json();
+    const daily = wData.daily;
+
+    const wmo = {
+      0: 'Clear sky', 1: 'Mainly clear', 2: 'Partly cloudy', 3: 'Overcast',
+      45: 'Foggy', 48: 'Icy fog', 51: 'Light drizzle', 53: 'Moderate drizzle',
+      55: 'Heavy drizzle', 61: 'Slight rain', 63: 'Moderate rain', 65: 'Heavy rain',
+      71: 'Slight snow', 73: 'Moderate snow', 75: 'Heavy snow',
+      80: 'Slight showers', 81: 'Moderate showers', 82: 'Heavy showers',
+      95: 'Thunderstorm', 99: 'Heavy thunderstorm with hail'
+    };
+
+    const lines = [`Weather forecast for ${display_name} (${forecastDays} days):`];
+    for (let i = 0; i < daily.time.length; i++) {
+      const code = daily.weathercode[i];
+      const desc = wmo[code] || `Code ${code}`;
+      const rain = daily.precipitation_probability_mean[i];
+      const hi = daily.temperature_2m_max[i];
+      const lo = daily.temperature_2m_min[i];
+      lines.push(`${daily.time[i]}: ${desc} | High ${hi}C / Low ${lo}C | Rain chance ${rain}%`);
+    }
+    return lines.join('\n');
+  } catch (e) {
+    return `Weather error: ${e.message}`;
+  }
+}
+
+async function toolFlights(origin, destination, departureDate, returnDate = '', passengers = 1) {
+  const googleUrl = `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(origin)}+to+${encodeURIComponent(destination)}+${departureDate}`;
+  const skyscannerUrl = `https://www.skyscanner.com/transport/flights/${encodeURIComponent(origin.toLowerCase())}/${encodeURIComponent(destination.toLowerCase())}/${(departureDate || '').replace(/-/g, '')}`;
+  const kayakUrl = `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departureDate}${returnDate ? '/' + returnDate : ''}/${passengers}adults`;
+
+  let result = `Flights: ${origin} to ${destination}\n`;
+  result += `Departure: ${departureDate}${returnDate ? ' | Return: ' + returnDate : ''} | Passengers: ${passengers}\n\n`;
+  result += `Book here:\n`;
+  result += `- Google Flights: ${googleUrl}\n`;
+  result += `- Skyscanner: ${skyscannerUrl}\n`;
+  result += `- Kayak: ${kayakUrl}\n\n`;
+
+  const searchResult = await toolWebSearch(`cheap flights ${origin} to ${destination} ${departureDate} ${passengers} passengers family`, 4);
+  result += `Search results:\n${searchResult}`;
+  return result;
+}
+
+async function toolHotels(location, checkin, checkout, guests = 2, rooms = 1) {
+  const bookingUrl = `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`;
+  const airbnbUrl = `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`;
+  const hotelsUrl = `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`;
+
+  let result = `Hotels in ${location}\n`;
+  result += `Check-in: ${checkin} | Check-out: ${checkout} | Guests: ${guests} | Rooms: ${rooms}\n\n`;
+  result += `Book here:\n`;
+  result += `- Booking.com: ${bookingUrl}\n`;
+  result += `- Airbnb: ${airbnbUrl}\n`;
+  result += `- Hotels.com: ${hotelsUrl}\n\n`;
+
+  const searchResult = await toolWebSearch(`best family hotels ${location} kids amenities pool`, 4);
+  result += `Search results:\n${searchResult}`;
+  return result;
+}
+
+async function toolDestinationImage(location) {
+  const prompt = encodeURIComponent(`stunning travel destination ${location} beautiful landscape family vacation photorealistic golden hour`);
+  const imageUrl = `https://image.pollinations.ai/prompt/${prompt}?width=900&height=450&nologo=true&seed=42`;
+  return JSON.stringify({ image_url: imageUrl, location, type: 'destination_image' });
+}
+
+async function toolCurrency(from, to) {
+  try {
+    const url = `https://api.frankfurter.app/latest?from=${from.toUpperCase()}&to=${to.toUpperCase()}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const rate = data.rates[to.toUpperCase()];
+    return `1 ${from.toUpperCase()} = ${rate} ${to.toUpperCase()} (European Central Bank)`;
+  } catch (e) {
+    return `Currency error: ${e.message}`;
+  }
+}
+
+async function toolActivities(location, activityType = 'family', numResults = 6) {
+  return toolWebSearch(`best ${activityType} activities things to do ${location} kids children`, numResults);
+}
+
+async function toolRestaurants(location, cuisine = '', familyFriendly = true) {
+  const tag = familyFriendly ? 'family friendly' : 'best';
+  return toolWebSearch(`${tag} ${cuisine} restaurants ${location} kids children menu`, 6);
+}
+
+async function toolTips(destination, month = '') {
+  return toolWebSearch(`family travel tips ${destination} ${month} visa requirements safety kids packing`, 5);
+}
+
+async function toolTransport(location) {
+  return toolWebSearch(`getting around ${location} public transport taxi family tips`, 4);
+}
+
+// ─── Tool definitions for Groq tool calling ──────────────────────────────────
+
+const TOOLS_DEF = [
+  {
+    type: 'function',
+    function: {
+      name: 'web_search',
+      description: 'Search the web for current information about any topic',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query' },
+          max_results: { type: 'integer', default: 5 }
+        },
+        required: ['query']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description: 'Get weather forecast for a travel destination',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string', description: 'City or destination name' },
+          days: { type: 'integer', description: 'Forecast days (max 16)', default: 7 }
+        },
+        required: ['location']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_flights',
+      description: 'Search for flights and provide booking links',
+      parameters: {
+        type: 'object',
+        properties: {
+          origin: { type: 'string', description: 'Departure city or airport' },
+          destination: { type: 'string', description: 'Destination city or airport' },
+          departure_date: { type: 'string', description: 'Date in YYYY-MM-DD format' },
+          return_date: { type: 'string', description: 'Return date YYYY-MM-DD', default: '' },
+          passengers: { type: 'integer', description: 'Total number of passengers', default: 1 }
+        },
+        required: ['origin', 'destination', 'departure_date']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'search_hotels',
+      description: 'Search for family hotels and provide booking links',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' },
+          checkin: { type: 'string', description: 'Check-in date YYYY-MM-DD' },
+          checkout: { type: 'string', description: 'Check-out date YYYY-MM-DD' },
+          guests: { type: 'integer', default: 2 },
+          rooms: { type: 'integer', default: 1 }
+        },
+        required: ['location', 'checkin', 'checkout']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'destination_image',
+      description: 'Generate a beautiful image of a travel destination',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string', description: 'Destination name to visualize' }
+        },
+        required: ['location']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'currency_info',
+      description: 'Get live currency exchange rates',
+      parameters: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Source currency code e.g. USD' },
+          to: { type: 'string', description: 'Target currency code e.g. EUR' }
+        },
+        required: ['from', 'to']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'find_activities',
+      description: 'Find activities and attractions for families at a destination',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' },
+          activity_type: { type: 'string', description: 'Type: family, adventure, cultural, beach, theme park', default: 'family' },
+          num_results: { type: 'integer', default: 6 }
+        },
+        required: ['location']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'find_restaurants',
+      description: 'Find family-friendly restaurants at a destination',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' },
+          cuisine: { type: 'string', description: 'Cuisine type (optional)', default: '' },
+          family_friendly: { type: 'boolean', default: true }
+        },
+        required: ['location']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_travel_tips',
+      description: 'Get practical travel tips, visa info, safety advice, and packing lists for families',
+      parameters: {
+        type: 'object',
+        properties: {
+          destination: { type: 'string' },
+          month: { type: 'string', description: 'Month of travel (optional)', default: '' }
+        },
+        required: ['destination']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'find_local_transport',
+      description: 'Find local transportation options at the destination',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: { type: 'string' }
+        },
+        required: ['location']
+      }
+    }
+  }
+];
+
+const TOOL_MAP = {
+  web_search: (args) => toolWebSearch(args.query, args.max_results),
+  get_weather: (args) => toolWeather(args.location, args.days),
+  search_flights: (args) => toolFlights(args.origin, args.destination, args.departure_date, args.return_date, args.passengers),
+  search_hotels: (args) => toolHotels(args.location, args.checkin, args.checkout, args.guests, args.rooms),
+  destination_image: (args) => toolDestinationImage(args.location),
+  currency_info: (args) => toolCurrency(args.from, args.to),
+  find_activities: (args) => toolActivities(args.location, args.activity_type, args.num_results),
+  find_restaurants: (args) => toolRestaurants(args.location, args.cuisine, args.family_friendly),
+  get_travel_tips: (args) => toolTips(args.destination, args.month),
+  find_local_transport: (args) => toolTransport(args.location)
+};
+
+// ─── Agent runner ─────────────────────────────────────────────────────────────
+
+async function runAgent(userMessage, history, apiKey, profile) {
+  const today = new Date().toISOString().split('T')[0];
+
+  let profileContext = '';
+  if (profile && profile.name && profile.name !== 'Guest') {
+    const adults = profile.adults || 2;
+    const children = profile.children || 0;
+    const dietary = (profile.dietary || []).filter(d => d !== 'None').join(', ') || 'None';
+    const style = profile.travel_style || '';
+    const budget = profile.budget || '';
+    const homeCity = profile.home_city || '';
+    const childAges = profile.children_ages || '';
+
+    profileContext = `\n\nUser profile:
+- Name: ${profile.name}
+- Home city: ${homeCity}
+- Family: ${adults} adult(s), ${children} child(ren)${childAges ? ' (ages: ' + childAges + ')' : ''}
+- Dietary requirements: ${dietary}
+- Travel style: ${style}
+- Budget: ${budget}
+
+Personalise your recommendations based on this profile. Address the user by their first name.`;
+  }
+
+  const systemPrompt = `You are FamilyTripAI, an expert family travel planning assistant. You help families plan complete trips with practical, detailed advice tailored for travelling with children.
+
+When planning a trip, always:
+1. Generate a destination image first using destination_image
+2. Search flights and hotels with direct booking links
+3. Check the weather for the travel dates
+4. Find top activities suitable for kids and adults
+5. Recommend family-friendly restaurants (note any dietary requirements like kosher, halal, allergies)
+6. Share practical travel tips including visa requirements, safety, and packing
+7. Check currency exchange if travelling internationally
+8. Build a clear day-by-day itinerary
+
+Think carefully about children's needs: energy levels, meal times, rest breaks, age-appropriate activities, and safety.
+Format responses with clear headers and sections. Be thorough and practical.
+Today's date: ${today}${profileContext}`;
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...(history || []),
+    { role: 'user', content: userMessage }
+  ];
+
+  const toolsUsed = [];
+  const images = [];
+
+  for (let iter = 0; iter < 12; iter++) {
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages,
+        tools: TOOLS_DEF,
+        tool_choice: 'auto',
+        max_tokens: 4096
+      })
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      throw new Error(`Groq API error ${resp.status}: ${errText}`);
+    }
+
+    const data = await resp.json();
+    const msg = data.choices[0].message;
+
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      return { response: msg.content || '', tools_used: toolsUsed, images };
+    }
+
+    // Append assistant message with tool calls
+    messages.push({
+      role: 'assistant',
+      content: msg.content || '',
+      tool_calls: msg.tool_calls
+    });
+
+    // Execute each tool call
+    for (const tc of msg.tool_calls) {
+      const fnName = tc.function.name;
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments); } catch (_) {}
+
+      toolsUsed.push({ tool: fnName, args });
+
+      let result = '';
+      const fn = TOOL_MAP[fnName];
+      if (fn) {
+        try {
+          result = await fn(args);
+        } catch (e) {
+          result = `Tool error: ${e.message}`;
+        }
+      } else {
+        result = `Unknown tool: ${fnName}`;
+      }
+
+      // Extract destination images
+      if (fnName === 'destination_image') {
+        try {
+          const parsed = JSON.parse(result);
+          if (parsed.image_url && !images.includes(parsed.image_url)) {
+            images.push(parsed.image_url);
+          }
+        } catch (_) {}
+      }
+
+      // Also scan all tool results for pollinations URLs
+      const pollinationsMatches = (typeof result === 'string' ? result : '').match(/https:\/\/image\.pollinations\.ai\/prompt\/[^\s\)\]"']+/g);
+      if (pollinationsMatches) {
+        for (const u of pollinationsMatches) {
+          if (!images.includes(u)) images.push(u);
+        }
+      }
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: typeof result === 'string' ? result : JSON.stringify(result)
+      });
+    }
+  }
+
+  // Max iterations reached — return last assistant content if any
+  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
+  return { response: lastAssistant ? lastAssistant.content : 'Planning complete.', tools_used: toolsUsed, images };
+}
+
+// ─── HTML ─────────────────────────────────────────────────────────────────────
+
+const HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FamilyTripAI</title>
-  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -35,10 +490,13 @@
       min-height: 100vh;
     }
 
+    /* ── Page system ── */
     .page { display: none; }
     .page.active { display: flex; }
 
-    /* ── PAGE 1: LOGIN ── */
+    /* ═══════════════════════════════════════════
+       PAGE 1 — LOGIN
+    ═══════════════════════════════════════════ */
     #page-login {
       min-height: 100vh;
       flex-direction: column;
@@ -52,6 +510,7 @@
                   #080c14;
     }
 
+    /* Animated gradient orbs */
     .orb {
       position: absolute;
       border-radius: 50%;
@@ -86,7 +545,11 @@
       box-shadow: 0 24px 80px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.04) inset;
     }
 
-    .login-brand { text-align: center; margin-bottom: 6px; }
+    .login-brand {
+      text-align: center;
+      margin-bottom: 6px;
+    }
+
     .login-brand h1 {
       font-size: 2rem;
       font-weight: 800;
@@ -96,25 +559,36 @@
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
-    .login-brand p { color: var(--text-muted); font-size: 0.85rem; margin-top: 4px; }
 
+    .login-brand p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-top: 4px;
+      letter-spacing: 0.2px;
+    }
+
+    /* Destination strip */
     .dest-strip-wrap {
       overflow: hidden;
       margin: 24px -12px 28px;
       mask-image: linear-gradient(to right, transparent, black 12%, black 88%, transparent);
       -webkit-mask-image: linear-gradient(to right, transparent, black 12%, black 88%, transparent);
     }
+
     .dest-strip {
       display: flex;
       gap: 10px;
       width: max-content;
       animation: scrollStrip 28s linear infinite;
     }
+
     .dest-strip:hover { animation-play-state: paused; }
+
     @keyframes scrollStrip {
       0%   { transform: translateX(0); }
       100% { transform: translateX(-50%); }
     }
+
     .dest-card {
       flex-shrink: 0;
       width: 120px;
@@ -132,16 +606,19 @@
       line-height: 1.3;
       border: 1px solid rgba(255,255,255,0.1);
     }
-    .dest-card span { font-size: 0.63rem; font-weight: 400; opacity: 0.75; margin-top: 2px; }
-    .dc-1 { background: linear-gradient(135deg, #1e3a5f, #2563eb); }
-    .dc-2 { background: linear-gradient(135deg, #1a3a2a, #059669); }
-    .dc-3 { background: linear-gradient(135deg, #3b1a4a, #7c3aed); }
-    .dc-4 { background: linear-gradient(135deg, #4a2500, #d97706); }
-    .dc-5 { background: linear-gradient(135deg, #1a2a4a, #0ea5e9); }
-    .dc-6 { background: linear-gradient(135deg, #2a1a3a, #ec4899); }
-    .dc-7 { background: linear-gradient(135deg, #1a3a1a, #16a34a); }
-    .dc-8 { background: linear-gradient(135deg, #3a1a1a, #dc2626); }
 
+    .dest-card span { font-size: 0.63rem; font-weight: 400; opacity: 0.75; margin-top: 2px; }
+
+    .dc-1  { background: linear-gradient(135deg, #1e3a5f, #2563eb); }
+    .dc-2  { background: linear-gradient(135deg, #1a3a2a, #059669); }
+    .dc-3  { background: linear-gradient(135deg, #3b1a4a, #7c3aed); }
+    .dc-4  { background: linear-gradient(135deg, #4a2500, #d97706); }
+    .dc-5  { background: linear-gradient(135deg, #1a2a4a, #0ea5e9); }
+    .dc-6  { background: linear-gradient(135deg, #2a1a3a, #ec4899); }
+    .dc-7  { background: linear-gradient(135deg, #1a3a1a, #16a34a); }
+    .dc-8  { background: linear-gradient(135deg, #3a1a1a, #dc2626); }
+
+    /* Auth buttons */
     .auth-btn {
       width: 100%;
       padding: 13px 20px;
@@ -157,9 +634,12 @@
       border: none;
       margin-bottom: 10px;
     }
+
     .auth-btn:hover { transform: translateY(-1px); box-shadow: 0 8px 24px rgba(0,0,0,0.3); }
+    .auth-btn:active { transform: translateY(0); }
+
     .btn-google { background: #fff; color: #1f2937; }
-    .btn-apple  { background: #000; color: #fff; border: 1px solid #333 !important; }
+    .btn-apple  { background: #000; color: #fff; border: 1px solid #333; }
 
     .auth-sep {
       text-align: center;
@@ -168,6 +648,7 @@
       margin: 14px 0;
       position: relative;
     }
+
     .auth-sep::before, .auth-sep::after {
       content: '';
       position: absolute;
@@ -191,7 +672,9 @@
     }
     .guest-link:hover { color: var(--text-main); }
 
-    /* ── PAGE 2: PROFILE ── */
+    /* ═══════════════════════════════════════════
+       PAGE 2 — PROFILE
+    ═══════════════════════════════════════════ */
     #page-profile {
       min-height: 100vh;
       flex-direction: column;
@@ -217,11 +700,29 @@
       box-shadow: 0 24px 80px rgba(0,0,0,0.5);
     }
 
-    .profile-header { text-align: center; margin-bottom: 32px; }
-    .profile-header h2 { font-size: 1.5rem; font-weight: 700; color: var(--text-bright); letter-spacing: -0.5px; }
-    .profile-header p  { color: var(--text-muted); font-size: 0.82rem; margin-top: 5px; }
+    .profile-header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
 
-    .field-group { margin-bottom: 20px; }
+    .profile-header h2 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-bright);
+      letter-spacing: -0.5px;
+    }
+
+    .profile-header p {
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      margin-top: 5px;
+    }
+
+    /* Form fields */
+    .field-group {
+      margin-bottom: 20px;
+    }
+
     .field-label {
       font-size: 0.78rem;
       font-weight: 600;
@@ -231,6 +732,7 @@
       margin-bottom: 8px;
       display: block;
     }
+
     .field-input {
       width: 100%;
       background: rgba(255,255,255,0.05);
@@ -246,15 +748,18 @@
     .field-input:focus { border-color: var(--accent); background: rgba(59,130,246,0.06); }
     .field-input::placeholder { color: var(--text-dim); }
 
+    /* Stepper */
     .stepper {
       display: flex;
       align-items: center;
+      gap: 0;
       background: rgba(255,255,255,0.05);
       border: 1px solid var(--border);
       border-radius: 8px;
       overflow: hidden;
       width: fit-content;
     }
+
     .stepper-btn {
       background: transparent;
       border: none;
@@ -269,6 +774,7 @@
       justify-content: center;
     }
     .stepper-btn:hover { background: rgba(255,255,255,0.08); color: var(--text-bright); }
+
     .stepper-val {
       width: 48px;
       text-align: center;
@@ -277,10 +783,17 @@
       color: var(--text-bright);
       border-left: 1px solid var(--border);
       border-right: 1px solid var(--border);
+      padding: 0 4px;
       line-height: 40px;
     }
 
-    .chip-group { display: flex; flex-wrap: wrap; gap: 8px; }
+    /* Chips */
+    .chip-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
     .chip {
       padding: 6px 14px;
       border-radius: 20px;
@@ -294,9 +807,19 @@
       user-select: none;
     }
     .chip:hover { border-color: var(--border-light); color: var(--text-main); }
-    .chip.selected { background: rgba(59,130,246,0.18); border-color: var(--accent); color: #93c5fd; }
+    .chip.selected {
+      background: rgba(59,130,246,0.18);
+      border-color: var(--accent);
+      color: #93c5fd;
+    }
 
-    .style-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+    /* Style cards */
+    .style-cards {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+
     .style-card {
       padding: 14px 12px;
       border-radius: 10px;
@@ -308,7 +831,8 @@
     }
     .style-card:hover { border-color: var(--border-light); background: rgba(255,255,255,0.07); }
     .style-card.selected { border-color: var(--accent); background: rgba(59,130,246,0.14); }
-    .sc-icon {
+
+    .style-card .sc-icon {
       width: 36px;
       height: 36px;
       border-radius: 8px;
@@ -316,9 +840,20 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      font-size: 1.1rem;
     }
-    .sc-label { font-size: 0.78rem; font-weight: 600; color: var(--text-main); }
-    .sc-desc  { font-size: 0.7rem; color: var(--text-muted); margin-top: 2px; }
+
+    .style-card .sc-label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    .style-card .sc-desc {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
 
     .btn-start {
       width: 100%;
@@ -332,16 +867,21 @@
       cursor: pointer;
       margin-top: 28px;
       transition: opacity 0.15s, transform 0.15s;
+      letter-spacing: 0.2px;
     }
     .btn-start:hover { opacity: 0.92; transform: translateY(-1px); }
+    .btn-start:active { transform: translateY(0); }
 
-    /* ── PAGE 3: APP ── */
+    /* ═══════════════════════════════════════════
+       PAGE 3 — CHAT APP
+    ═══════════════════════════════════════════ */
     #page-app {
       flex-direction: column;
       min-height: 100vh;
       background: var(--bg-dark);
     }
 
+    /* App header */
     .app-header {
       background: var(--bg-panel);
       border-bottom: 1px solid var(--border);
@@ -351,6 +891,7 @@
       gap: 12px;
       flex-shrink: 0;
     }
+
     .app-brand {
       font-size: 1.05rem;
       font-weight: 800;
@@ -360,12 +901,14 @@
       -webkit-text-fill-color: transparent;
       background-clip: text;
     }
+
     .app-header-right {
       margin-left: auto;
       display: flex;
       align-items: center;
       gap: 10px;
     }
+
     .user-avatar {
       width: 32px;
       height: 32px;
@@ -378,6 +921,7 @@
       align-items: center;
       justify-content: center;
     }
+
     .user-name {
       font-size: 0.82rem;
       color: var(--text-muted);
@@ -386,6 +930,7 @@
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+
     .key-pill {
       font-size: 0.7rem;
       padding: 4px 10px;
@@ -393,8 +938,9 @@
       border: 1px solid var(--border);
       color: var(--text-dim);
     }
-    .key-pill.active  { border-color: #065f46; color: var(--green); background: rgba(16,185,129,0.1); }
+    .key-pill.active { border-color: #065f46; color: var(--green); background: rgba(16,185,129,0.1); }
     .key-pill.missing { border-color: #7f1d1d; color: #f87171; background: rgba(248,113,113,0.1); }
+
     .settings-btn {
       background: transparent;
       border: 1px solid var(--border);
@@ -410,6 +956,7 @@
     }
     .settings-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-main); }
 
+    /* Chat body */
     .chat-body {
       flex: 1;
       display: flex;
@@ -431,12 +978,14 @@
       scrollbar-color: var(--border) transparent;
     }
 
+    /* Welcome screen */
     .welcome {
       text-align: center;
       padding: 50px 20px 40px;
       max-width: 540px;
       margin: 0 auto;
     }
+
     .welcome-logo {
       width: 64px;
       height: 64px;
@@ -447,10 +996,30 @@
       align-items: center;
       justify-content: center;
     }
-    .welcome h2 { font-size: 1.45rem; font-weight: 700; color: var(--text-bright); letter-spacing: -0.5px; margin-bottom: 10px; }
-    .welcome p  { color: var(--text-muted); font-size: 0.85rem; line-height: 1.65; margin-bottom: 18px; }
 
-    .profile-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
+    .welcome h2 {
+      font-size: 1.45rem;
+      font-weight: 700;
+      color: var(--text-bright);
+      letter-spacing: -0.5px;
+      margin-bottom: 10px;
+    }
+
+    .welcome p {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      line-height: 1.65;
+      margin-bottom: 18px;
+    }
+
+    .profile-chips {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 6px;
+      margin-top: 14px;
+    }
+
     .profile-chip {
       background: rgba(59,130,246,0.12);
       border: 1px solid rgba(59,130,246,0.25);
@@ -461,12 +1030,20 @@
       font-weight: 500;
     }
 
-    .msg { display: flex; gap: 10px; animation: msgIn 0.22s ease; }
+    /* Messages */
+    .msg {
+      display: flex;
+      gap: 10px;
+      animation: msgIn 0.22s ease;
+    }
+
     @keyframes msgIn {
       from { opacity: 0; transform: translateY(8px); }
       to   { opacity: 1; transform: translateY(0); }
     }
+
     .msg.user { flex-direction: row-reverse; }
+
     .msg-avatar {
       width: 32px;
       height: 32px;
@@ -480,8 +1057,10 @@
       align-self: flex-start;
       margin-top: 2px;
     }
+
     .msg.user .msg-avatar { background: linear-gradient(135deg, var(--accent), var(--accent-dim)); color: #fff; }
     .msg.bot  .msg-avatar { background: linear-gradient(135deg, #0f766e, #0891b2); color: #fff; }
+
     .bubble {
       max-width: 82%;
       padding: 12px 16px;
@@ -489,10 +1068,25 @@
       font-size: 0.875rem;
       line-height: 1.65;
     }
-    .msg.user .bubble { background: linear-gradient(135deg, var(--accent), var(--accent-dim)); color: #fff; border-bottom-right-radius: 4px; }
-    .msg.bot  .bubble { background: var(--bg-card); border: 1px solid var(--border); color: var(--text-main); border-bottom-left-radius: 4px; }
 
-    .bubble h1, .bubble h2, .bubble h3 { color: #93c5fd; margin: 14px 0 6px; font-size: 0.95em; }
+    .msg.user .bubble {
+      background: linear-gradient(135deg, var(--accent), var(--accent-dim));
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.bot .bubble {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-main);
+      border-bottom-left-radius: 4px;
+    }
+
+    .bubble h1, .bubble h2, .bubble h3 {
+      color: #93c5fd;
+      margin: 14px 0 6px;
+      font-size: 0.95em;
+    }
     .bubble h1 { font-size: 1.05em; }
     .bubble p  { margin: 5px 0; }
     .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
@@ -502,6 +1096,9 @@
     .bubble a:hover { text-decoration: underline; }
     .bubble code { background: var(--bg-dark); padding: 2px 5px; border-radius: 3px; font-size: 0.85em; }
     .bubble hr { border-color: var(--border); margin: 10px 0; }
+    .bubble table { border-collapse: collapse; width: 100%; font-size: 0.82em; margin: 8px 0; }
+    .bubble th, .bubble td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+    .bubble th { background: var(--bg-dark); color: #93c5fd; }
 
     .dest-img {
       width: 100%;
@@ -521,6 +1118,7 @@
       padding-top: 10px;
       border-top: 1px solid var(--border);
     }
+
     .tool-tag {
       background: var(--bg-dark);
       border: 1px solid var(--border);
@@ -530,7 +1128,11 @@
       font-size: 0.68rem;
     }
 
-    .typing-wrap { display: flex; gap: 10px; }
+    .typing-wrap {
+      display: flex;
+      gap: 10px;
+    }
+
     .typing-bubble {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -543,6 +1145,7 @@
       font-size: 0.82rem;
       color: var(--text-muted);
     }
+
     .dots span {
       display: inline-block;
       width: 7px;
@@ -553,13 +1156,26 @@
     }
     .dots span:nth-child(2) { animation-delay: 0.18s; }
     .dots span:nth-child(3) { animation-delay: 0.36s; }
+
     @keyframes dotPulse {
       0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
       40%            { transform: scale(1);   opacity: 1; }
     }
 
-    .input-area { width: 100%; max-width: 820px; padding: 8px 20px 22px; }
-    .suggestions { display: flex; flex-wrap: wrap; gap: 7px; margin-bottom: 10px; }
+    /* Input area */
+    .input-area {
+      width: 100%;
+      max-width: 820px;
+      padding: 8px 20px 22px;
+    }
+
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-bottom: 10px;
+    }
+
     .suggestion {
       background: var(--bg-card);
       border: 1px solid var(--border);
@@ -583,6 +1199,7 @@
       transition: border-color 0.15s;
     }
     .input-row:focus-within { border-color: var(--accent); }
+
     #user-input {
       flex: 1;
       background: transparent;
@@ -596,6 +1213,7 @@
       font-family: inherit;
     }
     #user-input::placeholder { color: var(--text-dim); }
+
     #send-btn {
       background: linear-gradient(135deg, var(--accent), var(--accent-dim));
       border: none;
@@ -624,6 +1242,7 @@
       justify-content: center;
     }
     .modal-overlay.open { display: flex; }
+
     .modal {
       background: var(--bg-panel);
       border: 1px solid var(--border-light);
@@ -634,9 +1253,11 @@
       margin: 16px;
       box-shadow: 0 20px 60px rgba(0,0,0,0.6);
     }
+
     .modal h2 { font-size: 1rem; font-weight: 700; color: var(--text-bright); margin-bottom: 6px; }
     .modal p  { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.55; }
     .modal a  { color: #60a5fa; }
+
     .modal-input {
       width: 100%;
       background: var(--bg-dark);
@@ -650,13 +1271,29 @@
       transition: border-color 0.15s;
     }
     .modal-input:focus { border-color: var(--accent); }
-    .modal-actions { display: flex; gap: 8px; margin-top: 14px; justify-content: flex-end; }
-    .mbtn { padding: 8px 18px; border-radius: 7px; font-size: 0.82rem; font-weight: 600; cursor: pointer; border: 1px solid transparent; transition: opacity 0.15s; }
-    .mbtn:hover { opacity: 0.85; }
-    .mbtn-primary   { background: var(--accent); color: #fff; }
-    .mbtn-secondary { background: rgba(255,255,255,0.06); color: var(--text-main); border-color: var(--border); }
-    .mbtn-danger    { background: transparent; color: #f87171; border-color: #7f1d1d; margin-right: auto; }
 
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      justify-content: flex-end;
+    }
+
+    .mbtn {
+      padding: 8px 18px;
+      border-radius: 7px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: opacity 0.15s;
+    }
+    .mbtn:hover { opacity: 0.85; }
+    .mbtn-primary { background: var(--accent); color: #fff; }
+    .mbtn-secondary { background: rgba(255,255,255,0.06); color: var(--text-main); border-color: var(--border); }
+    .mbtn-danger { background: transparent; color: #f87171; border-color: #7f1d1d; margin-right: auto; }
+
+    /* Error toast */
     .toast {
       position: fixed;
       bottom: 24px;
@@ -670,6 +1307,8 @@
       font-size: 0.82rem;
       z-index: 300;
       transition: transform 0.3s ease;
+      white-space: nowrap;
+      max-width: 90vw;
     }
     .toast.show { transform: translateX(-50%) translateY(0); }
 
@@ -683,7 +1322,7 @@
 </head>
 <body>
 
-<!-- PAGE 1: LOGIN -->
+<!-- ═══ PAGE 1: LOGIN ═══════════════════════════════════════════════════════ -->
 <div id="page-login" class="page active">
   <div class="orb orb-1"></div>
   <div class="orb orb-2"></div>
@@ -696,8 +1335,9 @@
       <p>The smartest way to plan family travel</p>
     </div>
 
+    <!-- Destination scroll strip -->
     <div class="dest-strip-wrap">
-      <div class="dest-strip">
+      <div class="dest-strip" id="dest-strip">
         <div class="dest-card dc-1">Paris<span>France</span></div>
         <div class="dest-card dc-2">Bali<span>Indonesia</span></div>
         <div class="dest-card dc-3">Kyoto<span>Japan</span></div>
@@ -706,6 +1346,7 @@
         <div class="dest-card dc-6">Santorini<span>Greece</span></div>
         <div class="dest-card dc-7">Cape Town<span>South Africa</span></div>
         <div class="dest-card dc-8">Cancun<span>Mexico</span></div>
+        <!-- Duplicate for seamless loop -->
         <div class="dest-card dc-1">Paris<span>France</span></div>
         <div class="dest-card dc-2">Bali<span>Indonesia</span></div>
         <div class="dest-card dc-3">Kyoto<span>Japan</span></div>
@@ -718,12 +1359,12 @@
     </div>
 
     <button class="auth-btn btn-google" onclick="beginSignup('google')">
-      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
+      <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/><\/svg>
       Continue with Google
     </button>
 
     <button class="auth-btn btn-apple" onclick="beginSignup('apple')">
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/></svg>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/><\/svg>
       Continue with Apple
     </button>
 
@@ -732,7 +1373,7 @@
   </div>
 </div>
 
-<!-- PAGE 2: PROFILE SETUP -->
+<!-- ═══ PAGE 2: PROFILE SETUP ═══════════════════════════════════════════════ -->
 <div id="page-profile" class="page">
   <div class="profile-card">
     <div class="profile-header">
@@ -744,10 +1385,12 @@
       <label class="field-label" for="pf-name">Your Full Name</label>
       <input class="field-input" id="pf-name" type="text" placeholder="Jane Smith" autocomplete="name" />
     </div>
+
     <div class="field-group">
       <label class="field-label" for="pf-city">Home City</label>
       <input class="field-input" id="pf-city" type="text" placeholder="London, UK" autocomplete="address-level2" />
     </div>
+
     <div class="field-group">
       <label class="field-label" for="pf-age">Your Age</label>
       <input class="field-input" id="pf-age" type="number" placeholder="35" min="18" max="100" style="max-width:120px" />
@@ -837,8 +1480,9 @@
   </div>
 </div>
 
-<!-- PAGE 3: CHAT APP -->
+<!-- ═══ PAGE 3: CHAT APP ═════════════════════════════════════════════════════ -->
 <div id="page-app" class="page" style="flex-direction:column">
+
   <header class="app-header">
     <div class="app-brand">FamilyTripAI</div>
     <div class="app-header-right">
@@ -878,6 +1522,7 @@
       </div>
     </div>
   </div>
+
 </div>
 
 <!-- Settings modal -->
@@ -898,6 +1543,7 @@
   </div>
 </div>
 
+<!-- Toast notification -->
 <div class="toast" id="toast"></div>
 
 <script>
@@ -909,7 +1555,7 @@
     document.getElementById(id).classList.add('active');
   }
 
-  // ── Profile ───────────────────────────────────────────────────────────────
+  // ── Profile management ───────────────────────────────────────────────────
   let profile = null;
   try { profile = JSON.parse(localStorage.getItem('familytrip_profile') || 'null'); } catch(_) {}
 
@@ -917,7 +1563,8 @@
 
   function step(field, delta) {
     const min = field === 'adults' ? 1 : 0;
-    counts[field] = Math.max(min, Math.min(10, counts[field] + delta));
+    const max = 10;
+    counts[field] = Math.max(min, Math.min(max, counts[field] + delta));
     document.getElementById('val-' + field).textContent = counts[field];
     if (field === 'children') {
       document.getElementById('ages-field').style.display = counts.children > 0 ? '' : 'none';
@@ -980,10 +1627,12 @@
     showPage('page-app');
   }
 
-  function beginSignup(provider) { showPage('page-profile'); }
+  function beginSignup(provider) {
+    showPage('page-profile');
+  }
 
   function initApp() {
-    const name  = profile ? profile.name : 'there';
+    const name = profile ? profile.name : 'there';
     const first = name.split(' ')[0];
 
     document.getElementById('user-avatar').textContent = first[0].toUpperCase();
@@ -993,17 +1642,18 @@
       document.getElementById('welcome-heading').textContent = 'Welcome back, ' + first + '! Where is your family headed?';
     }
 
+    // Profile chips
     const chipsEl = document.getElementById('welcome-chips');
     chipsEl.innerHTML = '';
     if (profile) {
       const parts = [];
-      if (profile.adults)    parts.push(profile.adults + ' adult' + (profile.adults !== 1 ? 's' : ''));
-      if (profile.children)  parts.push(profile.children + ' child' + (profile.children !== 1 ? 'ren' : ''));
+      if (profile.adults) parts.push(profile.adults + ' adult' + (profile.adults !== 1 ? 's' : ''));
+      if (profile.children) parts.push(profile.children + ' child' + (profile.children !== 1 ? 'ren' : ''));
       if (profile.home_city) parts.push('from ' + profile.home_city);
       const diets = (profile.dietary || []).filter(d => d !== 'None');
-      if (diets.length)          parts.push(diets.join(', '));
-      if (profile.travel_style)  parts.push(profile.travel_style);
-      if (profile.budget)        parts.push(profile.budget);
+      if (diets.length) parts.push(diets.join(', '));
+      if (profile.travel_style) parts.push(profile.travel_style);
+      if (profile.budget) parts.push(profile.budget);
       parts.forEach(p => {
         const chip = document.createElement('span');
         chip.className = 'profile-chip';
@@ -1011,14 +1661,15 @@
         chipsEl.appendChild(chip);
       });
     }
+
     updateKeyStatus();
   }
 
-  // ── API key ───────────────────────────────────────────────────────────────
+  // ── API key management ──────────────────────────────────────────────────
   function getKey() { return localStorage.getItem('groq_api_key') || ''; }
 
   function updateKeyStatus() {
-    const k  = getKey();
+    const k = getKey();
     const el = document.getElementById('key-status');
     if (!el) return;
     if (k && k.startsWith('gsk_')) {
@@ -1034,8 +1685,10 @@
     document.getElementById('key-input').value = getKey();
     document.getElementById('modal').classList.add('open');
   }
+
   function closeSettings() { document.getElementById('modal').classList.remove('open'); }
-  function maybeClose(e)   { if (e.target === document.getElementById('modal')) closeSettings(); }
+
+  function maybeClose(e) { if (e.target === document.getElementById('modal')) closeSettings(); }
 
   function saveKey() {
     const val = document.getElementById('key-input').value.trim();
@@ -1043,6 +1696,7 @@
     closeSettings();
     updateKeyStatus();
   }
+
   function clearKey() {
     localStorage.removeItem('groq_api_key');
     document.getElementById('key-input').value = '';
@@ -1050,7 +1704,7 @@
     updateKeyStatus();
   }
 
-  // ── Toast ─────────────────────────────────────────────────────────────────
+  // ── Toast ───────────────────────────────────────────────────────────────
   let toastTimer;
   function showToast(msg) {
     const t = document.getElementById('toast');
@@ -1060,13 +1714,17 @@
     toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
   }
 
-  // ── Chat ──────────────────────────────────────────────────────────────────
-  const messagesEl = document.getElementById('messages');
-  const inputEl    = document.getElementById('user-input');
-  const sendBtn    = document.getElementById('send-btn');
+  // ── Chat ────────────────────────────────────────────────────────────────
+  const messagesEl  = document.getElementById('messages');
+  const inputEl     = document.getElementById('user-input');
+  const sendBtn     = document.getElementById('send-btn');
   let history = [];
 
-  function fill(el) { inputEl.value = el.textContent.trim(); inputEl.focus(); resize(); }
+  function fill(el) {
+    inputEl.value = el.textContent.trim();
+    inputEl.focus();
+    resize();
+  }
 
   function resize() {
     inputEl.style.height = 'auto';
@@ -1078,24 +1736,32 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
-  function removeWelcome() { const w = document.getElementById('welcome'); if (w) w.remove(); }
-  function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function removeWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.remove();
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
 
   function addUser(text) {
     removeWelcome();
     const wrap = document.createElement('div');
     wrap.className = 'msg user';
-    wrap.innerHTML = '<div class="msg-avatar">You</div><div class="bubble">' + escHtml(text) + '</div>';
+    wrap.innerHTML = '<div class="msg-avatar">You<\/div><div class="bubble">' + escHtml(text) + '<\/div>';
     messagesEl.appendChild(wrap);
     scroll();
   }
 
   function addBot(text, toolsUsed, images) {
-    const wrap   = document.createElement('div');
+    const wrap = document.createElement('div');
     wrap.className = 'msg bot';
+
     const avatar = document.createElement('div');
     avatar.className = 'msg-avatar';
     avatar.textContent = 'AI';
+
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
@@ -1137,13 +1803,17 @@
     const wrap = document.createElement('div');
     wrap.className = 'typing-wrap';
     wrap.id = 'typing';
-    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI</div>' +
-      '<div class="typing-bubble"><div class="dots"><span></span><span></span><span></span></div>Searching and planning your trip...</div>';
+    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI<\/div>' +
+      '<div class="typing-bubble"><div class="dots"><span><\/span><span><\/span><span><\/span><\/div>Searching and planning your trip...<\/div>';
     messagesEl.appendChild(wrap);
     scroll();
   }
 
-  function hideTyping() { const el = document.getElementById('typing'); if (el) el.remove(); }
+  function hideTyping() {
+    const el = document.getElementById('typing');
+    if (el) el.remove();
+  }
+
   function scroll() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
   async function send() {
@@ -1151,11 +1821,15 @@
     if (!text) return;
 
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) { openSettings(); return; }
+    if (!key || !key.startsWith('gsk_')) {
+      openSettings();
+      return;
+    }
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
+
     addUser(text);
     showTyping();
 
@@ -1165,8 +1839,10 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: text, history, api_key: key, user_profile: profile })
       });
+
       const data = await res.json();
       hideTyping();
+
       if (!res.ok) {
         addBot('Error: ' + (data.detail || data.error || 'Server error'), [], []);
       } else {
@@ -1184,12 +1860,95 @@
     inputEl.focus();
   }
 
-  // ── Init ──────────────────────────────────────────────────────────────────
+  // ── Init ────────────────────────────────────────────────────────────────
   (function init() {
-    if (profile) { initApp(); showPage('page-app'); }
-    else { showPage('page-login'); }
+    if (profile) {
+      initApp();
+      showPage('page-app');
+    } else {
+      showPage('page-login');
+    }
     updateKeyStatus();
   })();
-</script>
+<\/script>
 </body>
-</html>
+</html>`;
+
+// ─── CORS headers ─────────────────────────────────────────────────────────────
+
+const CORS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+};
+
+// ─── Main handler ─────────────────────────────────────────────────────────────
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const method = request.method;
+
+    // CORS preflight
+    if (method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
+    // GET / → serve HTML
+    if (method === 'GET' && (url.pathname === '/' || url.pathname === '')) {
+      return new Response(HTML, {
+        status: 200,
+        headers: { ...CORS, 'Content-Type': 'text/html;charset=UTF-8' }
+      });
+    }
+
+    // POST /chat → run agent
+    if (method === 'POST' && url.pathname === '/chat') {
+      let body;
+      try {
+        body = await request.json();
+      } catch (_) {
+        return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+          status: 400,
+          headers: { ...CORS, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const { message, history = [], api_key, user_profile } = body;
+
+      if (!api_key || !api_key.startsWith('gsk_')) {
+        return new Response(
+          JSON.stringify({ error: 'Invalid or missing Groq API key. Get a free key at console.groq.com and paste it in settings.' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (!message || typeof message !== 'string' || !message.trim()) {
+        return new Response(
+          JSON.stringify({ error: 'Message is required.' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      try {
+        const result = await runAgent(message.trim(), history, api_key, user_profile || null);
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { ...CORS, 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        console.error('Agent error:', err);
+        return new Response(
+          JSON.stringify({ error: err.message || 'Internal server error' }),
+          { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // 404 for everything else
+    return new Response('Not found', {
+      status: 404,
+      headers: { ...CORS, 'Content-Type': 'text/plain' }
+    });
+  }
+};
