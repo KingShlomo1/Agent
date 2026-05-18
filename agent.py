@@ -1,9 +1,6 @@
 import json
-import os
 from groq import Groq
 from tools import TOOL_MAP
-
-client = Groq(api_key=os.environ["GROQ_API_KEY"])
 
 TOOLS = [
     {
@@ -122,7 +119,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_travel_tips",
-            "description": "Get practical travel tips, visa info, safety advice, packing lists for families",
+            "description": "Get practical travel tips, visa info, safety advice, and packing lists for families",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -164,36 +161,25 @@ TOOLS = [
     }
 ]
 
-SYSTEM_PROMPT = """You are FamilyTripAI ✈️, the ultimate family travel planning assistant. You help families plan incredible trips with thorough, practical, kid-friendly advice.
+SYSTEM_PROMPT = """You are FamilyTripAI, an expert family travel planning assistant. You help families plan complete trips with practical, detailed advice tailored for travelling with children.
 
-Your capabilities:
-- 🔍 Search the web for real-time travel info
-- 🌤️ Check weather forecasts for any destination
-- ✈️ Search flights with direct booking links
-- 🏨 Find family hotels with booking links
-- 🍽️ Recommend family-friendly restaurants
-- 🎡 Find activities for kids and adults
-- 🖼️ Generate beautiful destination images
-- 💡 Give practical travel tips and visa info
-- 💱 Check live currency exchange rates
-- 🚌 Find local transport options
+When planning a trip, always:
+1. Generate a destination image first
+2. Search flights and hotels with direct booking links
+3. Check the weather for the travel dates
+4. Find top activities suitable for kids and adults
+5. Recommend family-friendly restaurants (note any dietary requirements like kosher, halal, allergies)
+6. Share practical travel tips including visa requirements, safety, and packing
+7. Check currency exchange if travelling internationally
+8. Build a clear day-by-day itinerary
 
-When a user asks to plan a trip:
-1. Generate a destination image first to set the mood
-2. Search flights and hotels with booking links
-3. Check the weather for their travel dates
-4. Recommend top activities for families
-5. Suggest family-friendly restaurants
-6. Share practical travel tips (visa, safety, packing)
-7. Check currency if travelling internationally
-8. Create a day-by-day itinerary
-
-Always think about kids' needs: safety, entertainment, meal options, rest times.
-Format responses with clear sections, headers, and emojis. Be enthusiastic and helpful!
+Think carefully about children's needs: energy levels, meal times, rest breaks, age-appropriate activities, and safety.
+Format responses with clear headers and sections. Be thorough and practical.
 Today's date: 2026-05-18"""
 
 
-def run_agent(messages: list) -> tuple:
+def run_agent(messages: list, api_key: str) -> tuple:
+    client = Groq(api_key=api_key)
     full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
     tools_used = []
 

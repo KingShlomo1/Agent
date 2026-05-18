@@ -3,73 +3,182 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FamilyTripAI ✈️</title>
+  <title>FamilyTripAI</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
 
     body {
       font-family: 'Segoe UI', system-ui, sans-serif;
-      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      background: #0d1117;
       min-height: 100vh;
       display: flex;
       flex-direction: column;
       align-items: center;
-      padding: 0;
-      color: #f0f4f8;
+      color: #e6edf3;
     }
 
     header {
       width: 100%;
-      background: rgba(255,255,255,0.05);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid rgba(255,255,255,0.1);
-      padding: 16px 24px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      padding: 14px 24px;
       display: flex;
       align-items: center;
-      gap: 14px;
+      gap: 16px;
     }
 
-    header .logo { font-size: 2rem; }
-
-    header .title-block h1 {
-      font-size: 1.4rem;
+    header .brand {
+      font-size: 1.1rem;
       font-weight: 700;
-      color: #fff;
+      color: #f0f6fc;
       letter-spacing: -0.3px;
     }
 
-    header .title-block p {
-      font-size: 0.78rem;
-      color: #94b8cc;
-      margin-top: 2px;
+    header .sub {
+      font-size: 0.75rem;
+      color: #8b949e;
     }
 
-    .pills {
+    .header-right {
       margin-left: auto;
       display: flex;
-      gap: 8px;
-      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
     }
 
-    .pill {
-      background: rgba(255,255,255,0.08);
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 20px;
-      padding: 4px 12px;
+    .key-status {
       font-size: 0.72rem;
-      color: #a8d4e8;
-      white-space: nowrap;
+      padding: 4px 10px;
+      border-radius: 20px;
+      border: 1px solid #30363d;
+      color: #8b949e;
     }
 
-    .chat-container {
+    .key-status.active {
+      border-color: #238636;
+      color: #3fb950;
+      background: rgba(35,134,54,0.1);
+    }
+
+    .key-status.missing {
+      border-color: #da3633;
+      color: #f85149;
+      background: rgba(218,54,51,0.1);
+    }
+
+    #settings-btn {
+      background: #21262d;
+      border: 1px solid #30363d;
+      color: #c9d1d9;
+      padding: 6px 14px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    #settings-btn:hover { background: #30363d; }
+
+    /* Settings modal */
+    .modal-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .modal-overlay.open { display: flex; }
+
+    .modal {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 24px;
       width: 100%;
-      max-width: 860px;
+      max-width: 480px;
+      margin: 16px;
+    }
+
+    .modal h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: #f0f6fc;
+      margin-bottom: 6px;
+    }
+
+    .modal p {
+      font-size: 0.82rem;
+      color: #8b949e;
+      margin-bottom: 16px;
+      line-height: 1.5;
+    }
+
+    .modal a { color: #58a6ff; }
+
+    .modal input {
+      width: 100%;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      border-radius: 6px;
+      padding: 10px 12px;
+      color: #e6edf3;
+      font-size: 0.88rem;
+      font-family: monospace;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .modal input:focus { border-color: #58a6ff; }
+
+    .modal-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      padding: 7px 16px;
+      border-radius: 6px;
+      font-size: 0.82rem;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: opacity 0.15s;
+    }
+
+    .btn:hover { opacity: 0.85; }
+
+    .btn-primary {
+      background: #238636;
+      color: #fff;
+      border-color: #2ea043;
+    }
+
+    .btn-secondary {
+      background: #21262d;
+      color: #c9d1d9;
+      border-color: #30363d;
+    }
+
+    .btn-danger {
+      background: transparent;
+      color: #f85149;
+      border-color: #da3633;
+      margin-right: auto;
+    }
+
+    /* Chat layout */
+    .chat-wrap {
+      width: 100%;
+      max-width: 800px;
       flex: 1;
       display: flex;
       flex-direction: column;
       padding: 20px 16px 0;
-      gap: 0;
       overflow: hidden;
     }
 
@@ -78,421 +187,490 @@
       overflow-y: auto;
       display: flex;
       flex-direction: column;
-      gap: 16px;
+      gap: 14px;
       padding-bottom: 16px;
       scrollbar-width: thin;
-      scrollbar-color: rgba(255,255,255,0.15) transparent;
+      scrollbar-color: #30363d transparent;
+    }
+
+    .welcome {
+      text-align: center;
+      padding: 60px 20px 40px;
+      color: #8b949e;
+    }
+
+    .welcome h2 {
+      font-size: 1.5rem;
+      color: #f0f6fc;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .welcome p {
+      font-size: 0.88rem;
+      line-height: 1.6;
+      max-width: 440px;
+      margin: 0 auto;
     }
 
     .msg {
       display: flex;
-      gap: 12px;
-      animation: fadeIn 0.25s ease;
+      gap: 10px;
+      animation: fadeIn 0.2s ease;
     }
 
-    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
     .msg.user { flex-direction: row-reverse; }
 
     .avatar {
-      width: 36px;
-      height: 36px;
+      width: 32px;
+      height: 32px;
       border-radius: 50%;
+      font-size: 0.75rem;
+      font-weight: 700;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 1.1rem;
       flex-shrink: 0;
       align-self: flex-start;
       margin-top: 2px;
     }
 
-    .msg.user .avatar { background: linear-gradient(135deg, #667eea, #764ba2); }
-    .msg.bot .avatar { background: linear-gradient(135deg, #f093fb, #f5576c); }
+    .msg.user .avatar  { background: #1f6feb; color: #fff; }
+    .msg.bot  .avatar  { background: #238636; color: #fff; }
 
     .bubble {
-      max-width: 78%;
-      padding: 12px 16px;
-      border-radius: 16px;
+      max-width: 80%;
+      padding: 11px 15px;
+      border-radius: 12px;
+      font-size: 0.88rem;
       line-height: 1.6;
-      font-size: 0.92rem;
     }
 
     .msg.user .bubble {
-      background: linear-gradient(135deg, #667eea, #764ba2);
+      background: #1f6feb;
       color: #fff;
-      border-bottom-right-radius: 4px;
+      border-bottom-right-radius: 3px;
     }
 
     .msg.bot .bubble {
-      background: rgba(255,255,255,0.07);
-      border: 1px solid rgba(255,255,255,0.1);
-      color: #e8f4f8;
-      border-bottom-left-radius: 4px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      color: #e6edf3;
+      border-bottom-left-radius: 3px;
     }
 
     .bubble h1, .bubble h2, .bubble h3 {
-      color: #7dd3fc;
-      margin: 14px 0 6px;
-      font-size: 1em;
+      color: #58a6ff;
+      font-size: 0.95em;
+      margin: 12px 0 5px;
     }
-    .bubble h1 { font-size: 1.1em; }
 
-    .bubble p { margin: 6px 0; }
-    .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
-    .bubble li { margin: 4px 0; }
-    .bubble strong { color: #bae6fd; }
-    .bubble a { color: #38bdf8; text-decoration: none; }
+    .bubble h1 { font-size: 1.05em; }
+    .bubble p  { margin: 5px 0; }
+    .bubble ul, .bubble ol { padding-left: 18px; margin: 5px 0; }
+    .bubble li { margin: 3px 0; }
+    .bubble strong { color: #79c0ff; }
+    .bubble a  { color: #58a6ff; text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
     .bubble code {
-      background: rgba(0,0,0,0.3);
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 0.88em;
+      background: #0d1117;
+      padding: 2px 5px;
+      border-radius: 3px;
+      font-size: 0.85em;
     }
-    .bubble hr { border-color: rgba(255,255,255,0.1); margin: 10px 0; }
+    .bubble hr { border-color: #21262d; margin: 10px 0; }
 
-    .tools-used {
+    .dest-img {
+      width: 100%;
+      max-height: 260px;
+      object-fit: cover;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      border: 1px solid #30363d;
+      display: block;
+    }
+
+    .tools-row {
       display: flex;
       flex-wrap: wrap;
-      gap: 6px;
+      gap: 5px;
       margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid #21262d;
     }
 
     .tool-tag {
-      background: rgba(99,179,237,0.15);
-      border: 1px solid rgba(99,179,237,0.3);
-      color: #63b3ed;
+      background: #0d1117;
+      border: 1px solid #30363d;
+      color: #8b949e;
+      border-radius: 10px;
+      padding: 2px 9px;
+      font-size: 0.69rem;
+    }
+
+    .typing-bubble {
+      background: #161b22;
+      border: 1px solid #30363d;
       border-radius: 12px;
-      padding: 3px 10px;
-      font-size: 0.72rem;
-    }
-
-    .images-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 12px;
-    }
-
-    .dest-img {
-      border-radius: 12px;
-      max-width: 100%;
-      width: 100%;
-      max-height: 280px;
-      object-fit: cover;
-      border: 1px solid rgba(255,255,255,0.1);
-    }
-
-    .typing {
+      border-bottom-left-radius: 3px;
+      padding: 11px 15px;
       display: flex;
       align-items: center;
-      gap: 6px;
-      color: #94b8cc;
-      font-size: 0.85rem;
-      padding: 8px 0;
+      gap: 8px;
+      font-size: 0.82rem;
+      color: #8b949e;
     }
 
-    .typing-dots span {
+    .dots span {
       display: inline-block;
-      width: 7px;
-      height: 7px;
-      background: #7dd3fc;
+      width: 6px;
+      height: 6px;
+      background: #58a6ff;
       border-radius: 50%;
-      animation: bounce 1.2s infinite;
+      animation: pulse 1.2s infinite;
     }
-    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
-    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+    .dots span:nth-child(2) { animation-delay: 0.2s; }
+    .dots span:nth-child(3) { animation-delay: 0.4s; }
 
-    @keyframes bounce {
-      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
-      40% { transform: scale(1); opacity: 1; }
+    @keyframes pulse {
+      0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+      40%            { transform: scale(1);   opacity: 1;   }
     }
 
+    /* Input area */
     .input-area {
       width: 100%;
-      max-width: 860px;
-      padding: 12px 16px 20px;
-      background: transparent;
+      max-width: 800px;
+      padding: 10px 16px 20px;
     }
+
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .suggestion {
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 16px;
+      padding: 5px 12px;
+      font-size: 0.75rem;
+      color: #8b949e;
+      cursor: pointer;
+      transition: border-color 0.15s, color 0.15s;
+    }
+
+    .suggestion:hover { border-color: #58a6ff; color: #c9d1d9; }
 
     .input-row {
       display: flex;
-      gap: 10px;
-      background: rgba(255,255,255,0.07);
-      border: 1px solid rgba(255,255,255,0.15);
-      border-radius: 16px;
-      padding: 10px 14px;
+      gap: 8px;
+      background: #161b22;
+      border: 1px solid #30363d;
+      border-radius: 10px;
+      padding: 9px 12px;
       align-items: flex-end;
-      transition: border-color 0.2s;
+      transition: border-color 0.15s;
     }
 
-    .input-row:focus-within {
-      border-color: rgba(125,211,252,0.5);
-      background: rgba(255,255,255,0.09);
-    }
+    .input-row:focus-within { border-color: #58a6ff; }
 
     #user-input {
       flex: 1;
       background: transparent;
       border: none;
       outline: none;
-      color: #f0f4f8;
-      font-size: 0.94rem;
+      color: #e6edf3;
+      font-size: 0.88rem;
       resize: none;
-      max-height: 160px;
+      max-height: 140px;
       line-height: 1.5;
       font-family: inherit;
     }
 
-    #user-input::placeholder { color: #5a7a8a; }
+    #user-input::placeholder { color: #484f58; }
 
     #send-btn {
-      background: linear-gradient(135deg, #667eea, #764ba2);
+      background: #238636;
       border: none;
-      border-radius: 10px;
-      width: 40px;
-      height: 40px;
+      border-radius: 7px;
+      width: 36px;
+      height: 36px;
       cursor: pointer;
+      color: #fff;
+      font-size: 1rem;
       display: flex;
       align-items: center;
       justify-content: center;
-      font-size: 1.1rem;
       flex-shrink: 0;
-      transition: opacity 0.15s, transform 0.1s;
+      transition: background 0.15s;
     }
 
-    #send-btn:hover:not(:disabled) { opacity: 0.85; transform: scale(1.05); }
+    #send-btn:hover:not(:disabled) { background: #2ea043; }
     #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-    .suggestions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-
-    .suggestion {
-      background: rgba(255,255,255,0.05);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 20px;
-      padding: 6px 14px;
-      font-size: 0.8rem;
-      color: #94b8cc;
-      cursor: pointer;
-      transition: background 0.15s, color 0.15s;
-      white-space: nowrap;
-    }
-
-    .suggestion:hover {
-      background: rgba(125,211,252,0.12);
-      color: #7dd3fc;
-      border-color: rgba(125,211,252,0.3);
-    }
-
-    .welcome {
-      text-align: center;
-      padding: 40px 20px;
-      color: #94b8cc;
-    }
-
-    .welcome .big-emoji { font-size: 4rem; margin-bottom: 14px; }
-    .welcome h2 { font-size: 1.6rem; color: #fff; margin-bottom: 8px; }
-    .welcome p { font-size: 0.9rem; line-height: 1.6; max-width: 500px; margin: 0 auto; }
   </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">✈️</div>
-  <div class="title-block">
-    <h1>FamilyTripAI</h1>
-    <p>Your AI-powered family travel planner</p>
+  <div>
+    <div class="brand">FamilyTripAI</div>
+    <div class="sub">AI-powered family travel planner</div>
   </div>
-  <div class="pills">
-    <span class="pill">🔍 Web Search</span>
-    <span class="pill">🌤️ Weather</span>
-    <span class="pill">✈️ Flights</span>
-    <span class="pill">🏨 Hotels</span>
-    <span class="pill">🎡 Activities</span>
-    <span class="pill">🖼️ Images</span>
+  <div class="header-right">
+    <span class="key-status missing" id="key-status">No API key</span>
+    <button id="settings-btn" onclick="openSettings()">Settings</button>
   </div>
 </header>
 
-<div class="chat-container">
-  <div id="messages">
-    <div class="welcome" id="welcome">
-      <div class="big-emoji">🌍</div>
-      <h2>Where will your family go?</h2>
-      <p>Tell me your dream destination, travel dates, and how many are in your family. I'll plan everything — flights, hotels, activities, food, and more!</p>
+<!-- Settings modal -->
+<div class="modal-overlay" id="modal" onclick="maybeClose(event)">
+  <div class="modal">
+    <h2>Groq API Key</h2>
+    <p>
+      This app uses Groq's free LLM API. Get your free key at
+      <a href="https://console.groq.com" target="_blank">console.groq.com</a>
+      (no credit card required). Your key is stored only in your browser.
+    </p>
+    <input type="password" id="key-input" placeholder="gsk_..." autocomplete="off" />
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="clearKey()">Clear key</button>
+      <button class="btn btn-secondary" onclick="closeSettings()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveKey()">Save</button>
     </div>
   </div>
 </div>
 
-<div class="input-area" style="width:100%;max-width:860px;align-self:center;">
-  <div class="suggestions" id="suggestions">
-    <span class="suggestion" onclick="fillInput(this)">🗼 Plan a week in Paris for 4 (2 kids)</span>
-    <span class="suggestion" onclick="fillInput(this)">🏝️ 5-day Bali trip from London, July 2026</span>
-    <span class="suggestion" onclick="fillInput(this)">🎢 Orlando theme parks trip from NYC</span>
-    <span class="suggestion" onclick="fillInput(this)">🇯🇵 Japan family trip with toddlers</span>
+<div class="chat-wrap">
+  <div id="messages">
+    <div class="welcome" id="welcome">
+      <h2>Where is your family going?</h2>
+      <p>
+        Tell me your destination, travel dates, and family size.
+        I will plan flights, hotels, activities, food, and more.
+        Click Settings to add your free Groq API key first.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div class="input-area">
+  <div class="suggestions">
+    <span class="suggestion" onclick="fill(this)">Week in Paris, 2 adults 2 kids</span>
+    <span class="suggestion" onclick="fill(this)">5 days in Bali from London, July 2026</span>
+    <span class="suggestion" onclick="fill(this)">Thailand 4 weeks, 7 people, kosher, kids 5-15</span>
+    <span class="suggestion" onclick="fill(this)">Japan family trip with toddlers, September</span>
   </div>
   <div class="input-row">
-    <textarea id="user-input" rows="1" placeholder="Ask me to plan your family trip… e.g. 'Plan a 7-day trip to Tokyo for 2 adults and 2 kids departing June 15'"></textarea>
-    <button id="send-btn" onclick="sendMessage()" title="Send">➤</button>
+    <textarea id="user-input" rows="1" placeholder="Describe your trip — destination, dates, family size, any special requirements..."></textarea>
+    <button id="send-btn" onclick="send()">&#9654;</button>
   </div>
 </div>
 
 <script>
-  const messagesEl = document.getElementById('messages');
-  const inputEl = document.getElementById('user-input');
-  const sendBtn = document.getElementById('send-btn');
-  let history = [];
-
   marked.setOptions({ breaks: true });
 
-  function fillInput(el) {
-    inputEl.value = el.textContent.replace(/^[^\w]+/, '').trim();
+  const messagesEl = document.getElementById('messages');
+  const inputEl    = document.getElementById('user-input');
+  const sendBtn    = document.getElementById('send-btn');
+  const keyStatus  = document.getElementById('key-status');
+  let history = [];
+
+  // --- API key management ---
+  function getKey() { return localStorage.getItem('groq_api_key') || ''; }
+
+  function updateKeyStatus() {
+    const k = getKey();
+    if (k && k.startsWith('gsk_')) {
+      keyStatus.textContent = 'API key set';
+      keyStatus.className = 'key-status active';
+    } else {
+      keyStatus.textContent = 'No API key';
+      keyStatus.className = 'key-status missing';
+    }
+  }
+
+  function openSettings() {
+    document.getElementById('key-input').value = getKey();
+    document.getElementById('modal').classList.add('open');
+  }
+
+  function closeSettings() {
+    document.getElementById('modal').classList.remove('open');
+  }
+
+  function maybeClose(e) {
+    if (e.target === document.getElementById('modal')) closeSettings();
+  }
+
+  function saveKey() {
+    const val = document.getElementById('key-input').value.trim();
+    if (val) localStorage.setItem('groq_api_key', val);
+    closeSettings();
+    updateKeyStatus();
+  }
+
+  function clearKey() {
+    localStorage.removeItem('groq_api_key');
+    document.getElementById('key-input').value = '';
+    closeSettings();
+    updateKeyStatus();
+  }
+
+  updateKeyStatus();
+
+  // --- Input helpers ---
+  function fill(el) {
+    inputEl.value = el.textContent.trim();
     inputEl.focus();
-    autoResize();
+    resize();
   }
 
-  function autoResize() {
+  function resize() {
     inputEl.style.height = 'auto';
-    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 140) + 'px';
   }
 
-  inputEl.addEventListener('input', autoResize);
+  inputEl.addEventListener('input', resize);
   inputEl.addEventListener('keydown', e => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   });
 
-  function addMessage(role, content, toolsUsed = [], images = []) {
-    const welcome = document.getElementById('welcome');
-    if (welcome) welcome.remove();
+  // --- Messages ---
+  function removeWelcome() {
+    const w = document.getElementById('welcome');
+    if (w) w.remove();
+  }
 
-    const wrapper = document.createElement('div');
-    wrapper.className = `msg ${role}`;
+  function addUser(text) {
+    removeWelcome();
+    const wrap = document.createElement('div');
+    wrap.className = 'msg user';
+    wrap.innerHTML = `
+      <div class="avatar">You</div>
+      <div class="bubble">${escHtml(text)}</div>
+    `;
+    messagesEl.appendChild(wrap);
+    scroll();
+  }
+
+  function addBot(text, toolsUsed, images) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg bot';
 
     const avatar = document.createElement('div');
     avatar.className = 'avatar';
-    avatar.textContent = role === 'user' ? '👤' : '✈️';
+    avatar.textContent = 'AI';
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    if (role === 'bot') {
-      bubble.innerHTML = marked.parse(content || '');
-
-      if (images.length > 0) {
-        const imgRow = document.createElement('div');
-        imgRow.className = 'images-row';
-        images.forEach(src => {
-          const img = document.createElement('img');
-          img.src = src;
-          img.className = 'dest-img';
-          img.alt = 'Destination';
-          img.loading = 'lazy';
-          imgRow.appendChild(img);
-        });
-        bubble.prepend(imgRow);
-      }
-
-      if (toolsUsed.length > 0) {
-        const toolRow = document.createElement('div');
-        toolRow.className = 'tools-used';
-        const icons = {
-          web_search: '🔍', get_weather: '🌤️', search_flights: '✈️',
-          search_hotels: '🏨', find_restaurants: '🍽️', find_activities: '🎡',
-          generate_destination_image: '🖼️', get_travel_tips: '💡',
-          currency_info: '💱', find_local_transport: '🚌'
-        };
-        const seen = new Set();
-        toolsUsed.forEach(t => {
-          if (seen.has(t.tool)) return;
-          seen.add(t.tool);
-          const tag = document.createElement('span');
-          tag.className = 'tool-tag';
-          tag.textContent = `${icons[t.tool] || '🔧'} ${t.tool.replace(/_/g, ' ')}`;
-          toolRow.appendChild(tag);
-        });
-        bubble.appendChild(toolRow);
-      }
-    } else {
-      bubble.textContent = content;
+    if (images && images.length > 0) {
+      const img = document.createElement('img');
+      img.src = images[0];
+      img.className = 'dest-img';
+      img.alt = 'Destination';
+      img.loading = 'lazy';
+      bubble.appendChild(img);
     }
 
-    wrapper.appendChild(avatar);
-    wrapper.appendChild(bubble);
-    messagesEl.appendChild(wrapper);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
-    return wrapper;
+    const content = document.createElement('div');
+    content.innerHTML = marked.parse(text || '');
+    bubble.appendChild(content);
+
+    if (toolsUsed && toolsUsed.length > 0) {
+      const row = document.createElement('div');
+      row.className = 'tools-row';
+      const seen = new Set();
+      toolsUsed.forEach(t => {
+        if (seen.has(t.tool)) return;
+        seen.add(t.tool);
+        const tag = document.createElement('span');
+        tag.className = 'tool-tag';
+        tag.textContent = t.tool.replace(/_/g, ' ');
+        row.appendChild(tag);
+      });
+      bubble.appendChild(row);
+    }
+
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+    scroll();
   }
 
   function showTyping() {
-    const wrapper = document.createElement('div');
-    wrapper.className = 'msg bot';
-    wrapper.id = 'typing-indicator';
-
-    const avatar = document.createElement('div');
-    avatar.className = 'avatar';
-    avatar.textContent = '✈️';
-
-    const bubble = document.createElement('div');
-    bubble.className = 'bubble typing';
-    bubble.innerHTML = `
-      <div class="typing-dots">
-        <span></span><span></span><span></span>
+    const wrap = document.createElement('div');
+    wrap.className = 'msg bot';
+    wrap.id = 'typing';
+    wrap.innerHTML = `
+      <div class="avatar">AI</div>
+      <div class="typing-bubble">
+        <div class="dots"><span></span><span></span><span></span></div>
+        Searching and planning your trip...
       </div>
-      <span>Searching & planning your trip…</span>
     `;
-
-    wrapper.appendChild(avatar);
-    wrapper.appendChild(bubble);
-    messagesEl.appendChild(wrapper);
-    messagesEl.scrollTop = messagesEl.scrollHeight;
+    messagesEl.appendChild(wrap);
+    scroll();
   }
 
   function hideTyping() {
-    const el = document.getElementById('typing-indicator');
+    const el = document.getElementById('typing');
     if (el) el.remove();
   }
 
-  async function sendMessage() {
+  function scroll() { messagesEl.scrollTop = messagesEl.scrollHeight; }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  // --- Send ---
+  async function send() {
     const text = inputEl.value.trim();
     if (!text) return;
+
+    const key = getKey();
+    if (!key || !key.startsWith('gsk_')) {
+      openSettings();
+      return;
+    }
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
     sendBtn.disabled = true;
 
-    addMessage('user', text);
+    addUser(text);
     showTyping();
 
     try {
       const res = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: text, history })
+        body: JSON.stringify({ message: text, history, api_key: key })
       });
-
-      if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail || 'Server error');
-      }
 
       const data = await res.json();
       hideTyping();
-      addMessage('bot', data.response, data.tools_used || [], data.images || []);
 
-      history.push({ role: 'user', content: text });
-      history.push({ role: 'assistant', content: data.response });
-
-      // Keep history manageable
-      if (history.length > 20) history = history.slice(-20);
-
+      if (!res.ok) {
+        addBot('Error: ' + (data.detail || 'Server error'), [], []);
+      } else {
+        addBot(data.response, data.tools_used, data.images);
+        history.push({ role: 'user', content: text });
+        history.push({ role: 'assistant', content: data.response });
+        if (history.length > 20) history = history.slice(-20);
+      }
     } catch (err) {
       hideTyping();
-      addMessage('bot', `❌ Error: ${err.message}\n\nMake sure your GROQ_API_KEY is set in the .env file.`);
+      addBot('Network error: ' + err.message, [], []);
     }
 
     sendBtn.disabled = false;

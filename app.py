@@ -1,15 +1,13 @@
 import re
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
-
-if not os.environ.get("GROQ_API_KEY"):
-    raise RuntimeError("GROQ_API_KEY not set. Copy .env.example to .env and add your key.")
 
 from agent import run_agent
 
@@ -22,6 +20,7 @@ IMAGE_PATTERN = re.compile(r'https://image\.pollinations\.ai/prompt/[^\s\)\]"\']
 class ChatRequest(BaseModel):
     message: str
     history: list = []
+    api_key: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -37,14 +36,20 @@ async def index():
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(req: ChatRequest):
+    # Key can come from request body or environment
+    api_key = req.api_key or os.environ.get("GROQ_API_KEY", "")
+    if not api_key or not api_key.startswith("gsk_"):
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or missing Groq API key. Get a free key at console.groq.com and paste it in the settings panel."
+        )
+
     try:
         messages = req.history + [{"role": "user", "content": req.message}]
-        response, tools_used = run_agent(messages)
+        response, tools_used = run_agent(messages, api_key)
 
-        # Pull out any image URLs the agent produced
         images = IMAGE_PATTERN.findall(response or "")
 
-        # Also grab images returned by generate_destination_image tool
         for t in tools_used:
             if t["tool"] == "generate_destination_image":
                 from tools import generate_destination_image
@@ -53,6 +58,8 @@ async def chat(req: ChatRequest):
                     images.append(result["image_url"])
 
         return ChatResponse(response=response or "", tools_used=tools_used, images=images)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
