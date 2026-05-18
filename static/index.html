@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FamilyTripAI ✈️</title>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 0;
+      color: #f0f4f8;
+    }
+
+    header {
+      width: 100%;
+      background: rgba(255,255,255,0.05);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid rgba(255,255,255,0.1);
+      padding: 16px 24px;
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    header .logo { font-size: 2rem; }
+
+    header .title-block h1 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.3px;
+    }
+
+    header .title-block p {
+      font-size: 0.78rem;
+      color: #94b8cc;
+      margin-top: 2px;
+    }
+
+    .pills {
+      margin-left: auto;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      background: rgba(255,255,255,0.08);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 20px;
+      padding: 4px 12px;
+      font-size: 0.72rem;
+      color: #a8d4e8;
+      white-space: nowrap;
+    }
+
+    .chat-container {
+      width: 100%;
+      max-width: 860px;
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      padding: 20px 16px 0;
+      gap: 0;
+      overflow: hidden;
+    }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      padding-bottom: 16px;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.15) transparent;
+    }
+
+    .msg {
+      display: flex;
+      gap: 12px;
+      animation: fadeIn 0.25s ease;
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; } }
+
+    .msg.user { flex-direction: row-reverse; }
+
+    .avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      align-self: flex-start;
+      margin-top: 2px;
+    }
+
+    .msg.user .avatar { background: linear-gradient(135deg, #667eea, #764ba2); }
+    .msg.bot .avatar { background: linear-gradient(135deg, #f093fb, #f5576c); }
+
+    .bubble {
+      max-width: 78%;
+      padding: 12px 16px;
+      border-radius: 16px;
+      line-height: 1.6;
+      font-size: 0.92rem;
+    }
+
+    .msg.user .bubble {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+
+    .msg.bot .bubble {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.1);
+      color: #e8f4f8;
+      border-bottom-left-radius: 4px;
+    }
+
+    .bubble h1, .bubble h2, .bubble h3 {
+      color: #7dd3fc;
+      margin: 14px 0 6px;
+      font-size: 1em;
+    }
+    .bubble h1 { font-size: 1.1em; }
+
+    .bubble p { margin: 6px 0; }
+    .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
+    .bubble li { margin: 4px 0; }
+    .bubble strong { color: #bae6fd; }
+    .bubble a { color: #38bdf8; text-decoration: none; }
+    .bubble a:hover { text-decoration: underline; }
+    .bubble code {
+      background: rgba(0,0,0,0.3);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.88em;
+    }
+    .bubble hr { border-color: rgba(255,255,255,0.1); margin: 10px 0; }
+
+    .tools-used {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .tool-tag {
+      background: rgba(99,179,237,0.15);
+      border: 1px solid rgba(99,179,237,0.3);
+      color: #63b3ed;
+      border-radius: 12px;
+      padding: 3px 10px;
+      font-size: 0.72rem;
+    }
+
+    .images-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .dest-img {
+      border-radius: 12px;
+      max-width: 100%;
+      width: 100%;
+      max-height: 280px;
+      object-fit: cover;
+      border: 1px solid rgba(255,255,255,0.1);
+    }
+
+    .typing {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #94b8cc;
+      font-size: 0.85rem;
+      padding: 8px 0;
+    }
+
+    .typing-dots span {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      background: #7dd3fc;
+      border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    @keyframes bounce {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    .input-area {
+      width: 100%;
+      max-width: 860px;
+      padding: 12px 16px 20px;
+      background: transparent;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      background: rgba(255,255,255,0.07);
+      border: 1px solid rgba(255,255,255,0.15);
+      border-radius: 16px;
+      padding: 10px 14px;
+      align-items: flex-end;
+      transition: border-color 0.2s;
+    }
+
+    .input-row:focus-within {
+      border-color: rgba(125,211,252,0.5);
+      background: rgba(255,255,255,0.09);
+    }
+
+    #user-input {
+      flex: 1;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #f0f4f8;
+      font-size: 0.94rem;
+      resize: none;
+      max-height: 160px;
+      line-height: 1.5;
+      font-family: inherit;
+    }
+
+    #user-input::placeholder { color: #5a7a8a; }
+
+    #send-btn {
+      background: linear-gradient(135deg, #667eea, #764ba2);
+      border: none;
+      border-radius: 10px;
+      width: 40px;
+      height: 40px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+      transition: opacity 0.15s, transform 0.1s;
+    }
+
+    #send-btn:hover:not(:disabled) { opacity: 0.85; transform: scale(1.05); }
+    #send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .suggestion {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      color: #94b8cc;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      white-space: nowrap;
+    }
+
+    .suggestion:hover {
+      background: rgba(125,211,252,0.12);
+      color: #7dd3fc;
+      border-color: rgba(125,211,252,0.3);
+    }
+
+    .welcome {
+      text-align: center;
+      padding: 40px 20px;
+      color: #94b8cc;
+    }
+
+    .welcome .big-emoji { font-size: 4rem; margin-bottom: 14px; }
+    .welcome h2 { font-size: 1.6rem; color: #fff; margin-bottom: 8px; }
+    .welcome p { font-size: 0.9rem; line-height: 1.6; max-width: 500px; margin: 0 auto; }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">✈️</div>
+  <div class="title-block">
+    <h1>FamilyTripAI</h1>
+    <p>Your AI-powered family travel planner</p>
+  </div>
+  <div class="pills">
+    <span class="pill">🔍 Web Search</span>
+    <span class="pill">🌤️ Weather</span>
+    <span class="pill">✈️ Flights</span>
+    <span class="pill">🏨 Hotels</span>
+    <span class="pill">🎡 Activities</span>
+    <span class="pill">🖼️ Images</span>
+  </div>
+</header>
+
+<div class="chat-container">
+  <div id="messages">
+    <div class="welcome" id="welcome">
+      <div class="big-emoji">🌍</div>
+      <h2>Where will your family go?</h2>
+      <p>Tell me your dream destination, travel dates, and how many are in your family. I'll plan everything — flights, hotels, activities, food, and more!</p>
+    </div>
+  </div>
+</div>
+
+<div class="input-area" style="width:100%;max-width:860px;align-self:center;">
+  <div class="suggestions" id="suggestions">
+    <span class="suggestion" onclick="fillInput(this)">🗼 Plan a week in Paris for 4 (2 kids)</span>
+    <span class="suggestion" onclick="fillInput(this)">🏝️ 5-day Bali trip from London, July 2026</span>
+    <span class="suggestion" onclick="fillInput(this)">🎢 Orlando theme parks trip from NYC</span>
+    <span class="suggestion" onclick="fillInput(this)">🇯🇵 Japan family trip with toddlers</span>
+  </div>
+  <div class="input-row">
+    <textarea id="user-input" rows="1" placeholder="Ask me to plan your family trip… e.g. 'Plan a 7-day trip to Tokyo for 2 adults and 2 kids departing June 15'"></textarea>
+    <button id="send-btn" onclick="sendMessage()" title="Send">➤</button>
+  </div>
+</div>
+
+<script>
+  const messagesEl = document.getElementById('messages');
+  const inputEl = document.getElementById('user-input');
+  const sendBtn = document.getElementById('send-btn');
+  let history = [];
+
+  marked.setOptions({ breaks: true });
+
+  function fillInput(el) {
+    inputEl.value = el.textContent.replace(/^[^\w]+/, '').trim();
+    inputEl.focus();
+    autoResize();
+  }
+
+  function autoResize() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 160) + 'px';
+  }
+
+  inputEl.addEventListener('input', autoResize);
+  inputEl.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  function addMessage(role, content, toolsUsed = [], images = []) {
+    const welcome = document.getElementById('welcome');
+    if (welcome) welcome.remove();
+
+    const wrapper = document.createElement('div');
+    wrapper.className = `msg ${role}`;
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = role === 'user' ? '👤' : '✈️';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+
+    if (role === 'bot') {
+      bubble.innerHTML = marked.parse(content || '');
+
+      if (images.length > 0) {
+        const imgRow = document.createElement('div');
+        imgRow.className = 'images-row';
+        images.forEach(src => {
+          const img = document.createElement('img');
+          img.src = src;
+          img.className = 'dest-img';
+          img.alt = 'Destination';
+          img.loading = 'lazy';
+          imgRow.appendChild(img);
+        });
+        bubble.prepend(imgRow);
+      }
+
+      if (toolsUsed.length > 0) {
+        const toolRow = document.createElement('div');
+        toolRow.className = 'tools-used';
+        const icons = {
+          web_search: '🔍', get_weather: '🌤️', search_flights: '✈️',
+          search_hotels: '🏨', find_restaurants: '🍽️', find_activities: '🎡',
+          generate_destination_image: '🖼️', get_travel_tips: '💡',
+          currency_info: '💱', find_local_transport: '🚌'
+        };
+        const seen = new Set();
+        toolsUsed.forEach(t => {
+          if (seen.has(t.tool)) return;
+          seen.add(t.tool);
+          const tag = document.createElement('span');
+          tag.className = 'tool-tag';
+          tag.textContent = `${icons[t.tool] || '🔧'} ${t.tool.replace(/_/g, ' ')}`;
+          toolRow.appendChild(tag);
+        });
+        bubble.appendChild(toolRow);
+      }
+    } else {
+      bubble.textContent = content;
+    }
+
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(bubble);
+    messagesEl.appendChild(wrapper);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+    return wrapper;
+  }
+
+  function showTyping() {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'msg bot';
+    wrapper.id = 'typing-indicator';
+
+    const avatar = document.createElement('div');
+    avatar.className = 'avatar';
+    avatar.textContent = '✈️';
+
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble typing';
+    bubble.innerHTML = `
+      <div class="typing-dots">
+        <span></span><span></span><span></span>
+      </div>
+      <span>Searching & planning your trip…</span>
+    `;
+
+    wrapper.appendChild(avatar);
+    wrapper.appendChild(bubble);
+    messagesEl.appendChild(wrapper);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function hideTyping() {
+    const el = document.getElementById('typing-indicator');
+    if (el) el.remove();
+  }
+
+  async function sendMessage() {
+    const text = inputEl.value.trim();
+    if (!text) return;
+
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+    sendBtn.disabled = true;
+
+    addMessage('user', text);
+    showTyping();
+
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text, history })
+      });
+
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || 'Server error');
+      }
+
+      const data = await res.json();
+      hideTyping();
+      addMessage('bot', data.response, data.tools_used || [], data.images || []);
+
+      history.push({ role: 'user', content: text });
+      history.push({ role: 'assistant', content: data.response });
+
+      // Keep history manageable
+      if (history.length > 20) history = history.slice(-20);
+
+    } catch (err) {
+      hideTyping();
+      addMessage('bot', `❌ Error: ${err.message}\n\nMake sure your GROQ_API_KEY is set in the .env file.`);
+    }
+
+    sendBtn.disabled = false;
+    inputEl.focus();
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+groq
+duckduckgo-search
+requests
+fastapi
+uvicorn[standard]
+python-dotenv
+httpx
