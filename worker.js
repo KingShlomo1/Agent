@@ -2516,12 +2516,16 @@ const HTML = `<!DOCTYPE html>
 <!-- Settings modal -->
 <div class="modal-overlay" id="modal" onclick="maybeClose(event)">
   <div class="modal">
-    <h2>Groq API Key</h2>
+    <h2>Add your free Groq API key</h2>
     <p>
-      This app uses the Groq free LLM API. Get your key at
-      <a href="https://console.groq.com" target="_blank">console.groq.com</a>
-      (no credit card required). Your key is stored only in your browser.
+      The AI planner runs on Groq's free LLM API — it takes about a minute to set up and never asks for a credit card:
     </p>
+    <ol style="margin: 0 0 14px 18px; padding: 0; color: var(--text-muted, #ddd2c4); font-size: 0.92rem; line-height: 1.6;">
+      <li>Open <a href="https://console.groq.com/keys" target="_blank">console.groq.com/keys</a> and sign up free</li>
+      <li>Click "Create API Key" and copy it (starts with <code>gsk_</code>)</li>
+      <li>Paste it below and hit Save — that's it</li>
+    </ol>
+    <p style="font-size: 0.85rem; color: var(--text-dim, #756c60);">Your key is stored only in your browser — it's never sent anywhere except directly to Groq.</p>
     <input type="password" class="modal-input" id="key-input" placeholder="gsk_..." autocomplete="off" />
     <div class="modal-actions">
       <button class="mbtn mbtn-danger" onclick="clearKey()">Clear key</button>
@@ -3202,6 +3206,7 @@ const HTML = `<!DOCTYPE html>
 
     const key = getKey();
     if (!key || !key.startsWith('gsk_')) {
+      showToast('Add your free Groq API key to start chatting — takes under a minute.');
       openSettings();
       return;
     }
@@ -3436,7 +3441,11 @@ const HTML = `<!DOCTYPE html>
     evt.preventDefault();
     const form = evt.target;
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) { openSettings(); return false; }
+    if (!key || !key.startsWith('gsk_')) {
+      showToast('Add your free Groq API key first — Settings → paste your key.');
+      openSettings();
+      return false;
+    }
 
     const params = {};
     new FormData(form).forEach((v, k) => { params[k] = v; });
@@ -3508,7 +3517,11 @@ const HTML = `<!DOCTYPE html>
   // ── For Me — personalised recommendations ────────────────────────────────
   async function loadRecommendations() {
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) { openSettings(); return; }
+    if (!key || !key.startsWith('gsk_')) {
+      showToast('Add your free Groq API key first — Settings → paste your key.');
+      openSettings();
+      return;
+    }
 
     const btn = document.getElementById('forme-btn');
     const grid = document.getElementById('forme-results');
