@@ -365,28 +365,56 @@ Today's date: ${today}${profileContext}`;
   const toolsUsed = [];
   const images = [];
 
-  for (let iter = 0; iter < 12; iter++) {
+  const callGroq = async (msgs, useTools) => {
+    const body = {
+      model: 'llama-3.3-70b-versatile',
+      messages: msgs,
+      max_tokens: 4096
+    };
+    if (useTools) {
+      body.tools = TOOLS_DEF;
+      body.tool_choice = 'auto';
+    }
+
     const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
-      body: JSON.stringify({
-        model: 'llama-3.3-70b-versatile',
-        messages,
-        tools: TOOLS_DEF,
-        tool_choice: 'auto',
-        max_tokens: 4096
-      })
+      body: JSON.stringify(body)
     });
 
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) { data = null; }
+
     if (!resp.ok) {
-      const errText = await resp.text();
-      throw new Error(`Groq API error ${resp.status}: ${errText}`);
+      const code = data && data.error && data.error.code;
+      const err = new Error(`Groq API error ${resp.status}: ${text}`);
+      err.code = code;
+      err.status = resp.status;
+      throw err;
+    }
+    return data;
+  };
+
+  for (let iter = 0; iter < 12; iter++) {
+    let data;
+    try {
+      data = await callGroq(messages, true);
+    } catch (e) {
+      // The model occasionally emits malformed function-call syntax as plain text,
+      // which Groq rejects as tool_use_failed. Retry once without tools so the
+      // user still gets a useful plain-text answer instead of an error.
+      if (e.code === 'tool_use_failed') {
+        const fallback = await callGroq(messages, false);
+        const fallbackMsg = fallback.choices[0].message;
+        return { response: fallbackMsg.content || '', tools_used: toolsUsed, images };
+      }
+      throw e;
     }
 
-    const data = await resp.json();
     const msg = data.choices[0].message;
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
