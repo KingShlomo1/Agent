@@ -653,6 +653,7 @@ const HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FamilyTripAI</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+  <script src="https://cdn.jsdelivr.net/npm/globe.gl"><\/script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@400;500;600;700&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -1400,6 +1401,34 @@ const HTML = `<!DOCTYPE html>
     }
     .browse-heading p { color: var(--text-muted); font-size: 0.86rem; margin-top: 4px; }
 
+    /* ── Explore globe ── */
+    .globe-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      margin: 18px 0 6px;
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+    .globe-legend span { display: flex; align-items: center; gap: 7px; }
+    .globe-legend i {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+    }
+    .globe-viz {
+      width: 100%;
+      height: 460px;
+      margin-top: 14px;
+      border-radius: 16px;
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 40%, #34322b 0%, #2b2924 70%);
+      border: 1px solid var(--border);
+    }
+    .globe-viz canvas { border-radius: 16px; }
+
     .subnav { display: flex; gap: 8px; margin: 18px 0 16px; }
     .subnav-btn {
       background: var(--bg-card);
@@ -2027,6 +2056,11 @@ const HTML = `<!DOCTYPE html>
 </head>
 <body>
 
+<!-- Populated by JS with real airports — gives the flight search a proper
+     dropdown of "City (CODE) — Airport name" so users don't have to guess
+     the exact spelling our search expects. -->
+<datalist id="airport-list"></datalist>
+
 <!-- ═══ PAGE 1: LOGIN ═══════════════════════════════════════════════════════ -->
 <div id="page-login" class="page active">
   <div class="hero-viewport">
@@ -2224,6 +2258,7 @@ const HTML = `<!DOCTYPE html>
       <button class="nav-tab" data-tab="trips" onclick="switchTab('trips')">Trips</button>
       <button class="nav-tab" data-tab="prices" onclick="switchTab('prices')">Prices</button>
       <button class="nav-tab" data-tab="forme" onclick="switchTab('forme')">For Me</button>
+      <button class="nav-tab" data-tab="globe" onclick="switchTab('globe')">Explore Globe</button>
     </nav>
     <div class="app-header-right">
       <span class="key-pill missing" id="key-status">No key set</span>
@@ -2282,8 +2317,8 @@ const HTML = `<!DOCTYPE html>
         </div>
 
         <form class="search-form" id="trips-form-flights" onsubmit="return submitSearch(event,'trips','flights')">
-          <input name="origin" placeholder="From (city or airport)" required />
-          <input name="destination" placeholder="To (city or airport)" required />
+          <input name="origin" placeholder="From (city or airport)" list="airport-list" autocomplete="off" required />
+          <input name="destination" placeholder="To (city or airport)" list="airport-list" autocomplete="off" required />
           <input type="date" name="departure_date" required />
           <input type="date" name="return_date" />
           <input type="number" name="passengers" min="1" value="1" title="Passengers" />
@@ -2368,8 +2403,8 @@ const HTML = `<!DOCTYPE html>
         </div>
 
         <form class="search-form" id="prices-form-flights" onsubmit="return submitSearch(event,'prices','flights')">
-          <input name="origin" placeholder="From (city or airport)" required />
-          <input name="destination" placeholder="To (city or airport)" required />
+          <input name="origin" placeholder="From (city or airport)" list="airport-list" autocomplete="off" required />
+          <input name="destination" placeholder="To (city or airport)" list="airport-list" autocomplete="off" required />
           <input type="date" name="departure_date" required />
           <input type="date" name="return_date" />
           <input type="number" name="passengers" min="1" value="1" title="Passengers" />
@@ -2422,6 +2457,23 @@ const HTML = `<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="tab-panel" id="tab-globe" data-tab="globe">
+    <div class="browse-wrap">
+      <div class="browse-inner">
+        <div class="browse-heading">
+          <h2>Explore the globe</h2>
+          <p>Spin the globe and see how family-friendly each destination is — color-coded from great fits to ones that need more planning. Click a dot for details.</p>
+        </div>
+        <div class="globe-legend">
+          <span><i style="background:#8ea06f"></i> Great for families</span>
+          <span><i style="background:#c97b5f"></i> Good, plan ahead</span>
+          <span><i style="background:#b85c4a"></i> More involved trip</span>
+        </div>
+        <div id="globe-viz" class="globe-viz"></div>
+      </div>
+    </div>
+  </div>
+
 </div>
 
 <!-- Settings modal -->
@@ -2442,6 +2494,25 @@ const HTML = `<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Account creation modal (Continue with Google/Apple) -->
+<div class="modal-overlay" id="account-modal" onclick="maybeCloseAccount(event)">
+  <div class="modal">
+    <h2 id="account-modal-title">Continue with Google</h2>
+    <p>
+      We can't run real Google/Apple sign-in here (that needs paid developer
+      credentials), so let's create your FamilyTripAI account directly — it's
+      saved securely in your browser, completely free.
+    </p>
+    <input type="text" class="modal-input" id="account-name-input" placeholder="Your name" autocomplete="name" />
+    <input type="email" class="modal-input" id="account-email-input" placeholder="you@example.com" autocomplete="email" style="margin-top:10px;" />
+    <p id="account-modal-error" style="color:var(--accent); display:none; margin-top:8px; font-size:0.9rem;"></p>
+    <div class="modal-actions">
+      <button class="mbtn mbtn-secondary" onclick="closeAccountModal()">Cancel</button>
+      <button class="mbtn mbtn-primary" onclick="createAccount()">Create account</button>
+    </div>
+  </div>
+</div>
+
 <!-- Toast notification -->
 <div class="toast" id="toast"></div>
 
@@ -2455,6 +2526,62 @@ const HTML = `<!DOCTYPE html>
   }
 
   // ── Hero slideshow (cinematic crossfade + Ken Burns) ─────────────────────
+  // ── Real airports for the flight-search dropdown ─────────────────────────
+  // A curated list of major world airports (IATA code, city, country, name) so
+  // users can pick from real options instead of guessing exact spellings.
+  const AIRPORTS = [
+    ['JFK','New York','USA','John F. Kennedy Intl'], ['LGA','New York','USA','LaGuardia'],
+    ['EWR','Newark','USA','Newark Liberty Intl'], ['LAX','Los Angeles','USA','Los Angeles Intl'],
+    ['ORD','Chicago','USA',"O'Hare Intl"], ['SFO','San Francisco','USA','San Francisco Intl'],
+    ['MIA','Miami','USA','Miami Intl'], ['BOS','Boston','USA','Logan Intl'],
+    ['SEA','Seattle','USA','Seattle-Tacoma Intl'], ['ATL','Atlanta','USA',"Hartsfield-Jackson Intl"],
+    ['DFW','Dallas','USA','Dallas/Fort Worth Intl'], ['IAH','Houston','USA','George Bush Intercontinental'],
+    ['LAS','Las Vegas','USA','Harry Reid Intl'], ['MCO','Orlando','USA','Orlando Intl'],
+    ['YYZ','Toronto','Canada','Toronto Pearson Intl'], ['YVR','Vancouver','Canada','Vancouver Intl'],
+    ['MEX','Mexico City','Mexico','Mexico City Intl'], ['GRU','São Paulo','Brazil','Guarulhos Intl'],
+    ['EZE','Buenos Aires','Argentina','Ministro Pistarini Intl'],
+    ['LHR','London','UK','Heathrow'], ['LGW','London','UK','Gatwick'], ['LTN','London','UK','Luton'],
+    ['CDG','Paris','France','Charles de Gaulle'], ['ORY','Paris','France','Orly'],
+    ['AMS','Amsterdam','Netherlands','Schiphol'], ['FRA','Frankfurt','Germany','Frankfurt Airport'],
+    ['MUC','Munich','Germany','Munich Airport'], ['MAD','Madrid','Spain','Adolfo Suárez Madrid–Barajas'],
+    ['BCN','Barcelona','Spain','El Prat'], ['FCO','Rome','Italy','Leonardo da Vinci–Fiumicino'],
+    ['MXP','Milan','Italy','Malpensa'], ['ZRH','Zurich','Switzerland','Zurich Airport'],
+    ['VIE','Vienna','Austria','Vienna Intl'], ['CPH','Copenhagen','Denmark','Copenhagen Airport'],
+    ['ARN','Stockholm','Sweden','Arlanda'], ['OSL','Oslo','Norway','Gardermoen'],
+    ['HEL','Helsinki','Finland','Helsinki Airport'], ['DUB','Dublin','Ireland','Dublin Airport'],
+    ['LIS','Lisbon','Portugal','Humberto Delgado'], ['ATH','Athens','Greece','Eleftherios Venizelos'],
+    ['IST','Istanbul','Turkey','Istanbul Airport'], ['WAW','Warsaw','Poland','Chopin Airport'],
+    ['PRG','Prague','Czechia','Václav Havel Airport'], ['BUD','Budapest','Hungary','Budapest Ferenc Liszt Intl'],
+    ['KEF','Reykjavik','Iceland','Keflavík Intl'],
+    ['TLV','Tel Aviv','Israel','Ben Gurion Airport'], ['DXB','Dubai','UAE','Dubai Intl'],
+    ['AUH','Abu Dhabi','UAE','Abu Dhabi Intl'], ['DOH','Doha','Qatar','Hamad Intl'],
+    ['CAI','Cairo','Egypt','Cairo Intl'], ['CMN','Casablanca','Morocco','Mohammed V Intl'],
+    ['JNB','Johannesburg','South Africa','OR Tambo Intl'], ['CPT','Cape Town','South Africa','Cape Town Intl'],
+    ['NBO','Nairobi','Kenya','Jomo Kenyatta Intl'],
+    ['DEL','Delhi','India','Indira Gandhi Intl'], ['BOM','Mumbai','India','Chhatrapati Shivaji Maharaj Intl'],
+    ['BKK','Bangkok','Thailand','Suvarnabhumi'], ['SIN','Singapore','Singapore','Changi'],
+    ['KUL','Kuala Lumpur','Malaysia','Kuala Lumpur Intl'], ['CGK','Jakarta','Indonesia','Soekarno-Hatta Intl'],
+    ['DPS','Bali','Indonesia','Ngurah Rai Intl'], ['MNL','Manila','Philippines','Ninoy Aquino Intl'],
+    ['HKG','Hong Kong','China','Hong Kong Intl'], ['PVG','Shanghai','China','Pudong Intl'],
+    ['PEK','Beijing','China','Capital Intl'], ['ICN','Seoul','South Korea','Incheon Intl'],
+    ['NRT','Tokyo','Japan','Narita Intl'], ['HND','Tokyo','Japan','Haneda Airport'],
+    ['KIX','Osaka','Japan','Kansai Intl'], ['TPE','Taipei','Taiwan','Taoyuan Intl'],
+    ['SYD','Sydney','Australia','Kingsford Smith'], ['MEL','Melbourne','Australia','Melbourne Airport'],
+    ['BNE','Brisbane','Australia','Brisbane Airport'], ['AKL','Auckland','New Zealand','Auckland Airport'],
+    ['ZQN','Queenstown','New Zealand','Queenstown Airport'],
+    ['GIG','Rio de Janeiro','Brazil','Galeão Intl'], ['LIM','Lima','Peru','Jorge Chávez Intl'],
+    ['BOG','Bogotá','Colombia','El Dorado Intl'], ['SJO','San José','Costa Rica','Juan Santamaría Intl']
+  ];
+
+  function initAirportList() {
+    const list = document.getElementById('airport-list');
+    if (!list || list.dataset.ready) return;
+    list.dataset.ready = '1';
+    list.innerHTML = AIRPORTS.map(([code, city, country, name]) =>
+      '<option value="' + escAttr(city + ' (' + code + ')') + '">' + escHtml(name + ' · ' + country) + '</option>'
+    ).join('');
+  }
+
   const HERO_SLIDES = [
     { seed: 11, prompt: 'Great Wall of China winding through misty green mountains aerial view golden morning light professional travel photography' },
     { seed: 22, prompt: 'Shanghai skyline at dusk river reflections glowing lights professional travel photography editorial' },
@@ -2575,9 +2702,101 @@ const HTML = `<!DOCTYPE html>
     setInterval(loadSellRates, 20000);
   }
 
+  // ── Explore globe: 3D globe with color-coded family-fit destinations ─────
+  const GLOBE_DESTINATIONS = [
+    { name: 'Orlando, USA',            lat: 28.5383,  lng: -81.3792,  fit: 10, why: 'Theme-park capital — purpose-built for family fun.' },
+    { name: 'Singapore',               lat: 1.3521,   lng: 103.8198,  fit: 9,  why: 'Spotless, safe and packed with family attractions.' },
+    { name: 'Paris, France',           lat: 48.8566,  lng: 2.3522,    fit: 9,  why: 'Easy transit, parks and museums for every age.' },
+    { name: 'Costa Rica',              lat: 9.7489,   lng: -83.7534,  fit: 9,  why: 'Wildlife and beaches — brilliant for active families.' },
+    { name: 'Tokyo, Japan',            lat: 35.6762,  lng: 139.6503,  fit: 8,  why: 'Safe, clean, incredible food — very kid-friendly.' },
+    { name: 'Lisbon, Portugal',        lat: 38.7223,  lng: -9.1393,   fit: 8,  why: 'Compact, walkable, sunny and easy on the budget.' },
+    { name: 'Sydney, Australia',       lat: -33.8688, lng: 151.2093,  fit: 8,  why: 'Beaches, wildlife parks and an easy pace.' },
+    { name: 'Vienna, Austria',         lat: 48.2082,  lng: 16.3738,   fit: 8,  why: 'Elegant, walkable, full of parks and palaces.' },
+    { name: 'Dubai, UAE',              lat: 25.2048,  lng: 55.2708,   fit: 8,  why: 'Modern and safe — indoor attractions beat the heat.' },
+    { name: 'Rome, Italy',             lat: 41.9028,  lng: 12.4964,   fit: 7,  why: 'History comes alive, though expect lots of walking.' },
+    { name: 'Bangkok, Thailand',       lat: 13.7563,  lng: 100.5018,  fit: 7,  why: 'Affordable and vibrant — busy and hot for little ones.' },
+    { name: 'Bali, Indonesia',         lat: -8.3405,  lng: 115.0920,  fit: 7,  why: 'Relaxed beaches and culture, but a long-haul flight.' },
+    { name: 'Queenstown, New Zealand', lat: -45.0312, lng: 168.6626,  fit: 7,  why: 'Adventure paradise — best suited to older kids.' },
+    { name: 'Cape Town, South Africa', lat: -33.9249, lng: 18.4241,   fit: 7,  why: 'Safaris and beaches — check current travel advisories.' },
+    { name: 'Reykjavik, Iceland',      lat: 64.1466,  lng: -21.9426,  fit: 6,  why: 'Stunning nature, but long flights and cold weather.' },
+    { name: 'Marrakech, Morocco',      lat: 31.6295,  lng: -7.9811,   fit: 6,  why: 'Rich culture — can feel intense for very young kids.' }
+  ];
+
+  function fitColor(fit) {
+    if (fit >= 8) return '#8ea06f';
+    if (fit >= 7) return '#c9a35f';
+    return '#c97b5f';
+  }
+
+  function fitLabel(fit) {
+    if (fit >= 8) return 'Great for families';
+    if (fit >= 7) return 'Good — plan ahead';
+    return 'More involved trip';
+  }
+
+  let globeInstance = null;
+
+  function initGlobe() {
+    const el = document.getElementById('globe-viz');
+    if (!el || el.dataset.ready) return;
+
+    if (typeof Globe !== 'function') {
+      el.dataset.ready = '1';
+      el.innerHTML = '<div class="browse-empty">The 3D globe couldn’t load (blocked script). Try refreshing the page.</div>';
+      return;
+    }
+
+    el.dataset.ready = '1';
+    el.innerHTML = '';
+
+    globeInstance = Globe()(el)
+      .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
+      .backgroundColor('rgba(0,0,0,0)')
+      .atmosphereColor('#c97b5f')
+      .atmosphereAltitude(0.18)
+      .pointsData(GLOBE_DESTINATIONS)
+      .pointLat('lat')
+      .pointLng('lng')
+      .pointColor(d => fitColor(d.fit))
+      .pointAltitude(0.02)
+      .pointRadius(0.5)
+      .pointLabel(d =>
+        '<div style="font-family:\'Montserrat\',system-ui,sans-serif;background:#3d3a32;color:#f7f1e6;' +
+        'padding:10px 14px;border-radius:10px;border:1px solid #4d473c;max-width:230px;line-height:1.4">' +
+        '<div style="font-family:\'Cormorant Garamond\',Georgia,serif;font-size:1.05rem;font-weight:600;margin-bottom:2px">' + escHtml(d.name) + '</div>' +
+        '<div style="font-size:0.76rem;color:' + fitColor(d.fit) + ';font-weight:600;letter-spacing:0.4px;text-transform:uppercase">' +
+          'Family fit ' + d.fit + '/10 · ' + escHtml(fitLabel(d.fit)) +
+        '</div>' +
+        '<div style="font-size:0.78rem;color:#ddd2c4;margin-top:5px">' + escHtml(d.why) + '</div>' +
+        '</div>'
+      )
+      .onPointClick(d => {
+        switchTab('chat');
+        if (inputEl) {
+          inputEl.value = 'Plan a family trip to ' + d.name;
+          inputEl.focus();
+        }
+      })
+      .width(el.clientWidth)
+      .height(460);
+
+    try {
+      const controls = globeInstance.controls();
+      controls.autoRotate = true;
+      controls.autoRotateSpeed = 0.55;
+    } catch (_) {}
+
+    window.addEventListener('resize', () => {
+      if (globeInstance && el.offsetParent !== null) globeInstance.width(el.clientWidth);
+    });
+  }
+
   // ── Profile management ───────────────────────────────────────────────────
   let profile = null;
   try { profile = JSON.parse(localStorage.getItem('familytrip_profile') || 'null'); } catch(_) {}
+
+  let account = null;
+  try { account = JSON.parse(localStorage.getItem('familytrip_account') || 'null'); } catch(_) {}
 
   let counts = { adults: 2, children: 0 };
 
@@ -2647,7 +2866,72 @@ const HTML = `<!DOCTYPE html>
     showPage('page-app');
   }
 
+  let pendingSignupProvider = '';
+
   function beginSignup(provider) {
+    pendingSignupProvider = provider;
+    const existing = loadAccount();
+    if (existing && existing.provider === provider) {
+      account = existing;
+      showToast('Welcome back, ' + existing.name.split(' ')[0] + '!');
+      const savedProfile = localStorage.getItem('familytrip_profile');
+      if (savedProfile) {
+        try { profile = JSON.parse(savedProfile); } catch (_) { profile = null; }
+      }
+      if (profile) { initApp(); showPage('page-app'); }
+      else { showPage('page-profile'); }
+      return;
+    }
+    document.getElementById('account-modal-title').textContent =
+      'Continue with ' + (provider === 'google' ? 'Google' : 'Apple');
+    document.getElementById('account-name-input').value = '';
+    document.getElementById('account-email-input').value = '';
+    document.getElementById('account-modal-error').style.display = 'none';
+    document.getElementById('account-modal').classList.add('open');
+    setTimeout(() => document.getElementById('account-name-input').focus(), 50);
+  }
+
+  function closeAccountModal() {
+    document.getElementById('account-modal').classList.remove('open');
+  }
+
+  function maybeCloseAccount(e) {
+    if (e.target === document.getElementById('account-modal')) closeAccountModal();
+  }
+
+  function loadAccount() {
+    try {
+      const raw = localStorage.getItem('familytrip_account');
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) { return null; }
+  }
+
+  function createAccount() {
+    const name = document.getElementById('account-name-input').value.trim();
+    const email = document.getElementById('account-email-input').value.trim();
+    const errEl = document.getElementById('account-modal-error');
+
+    if (!name) {
+      errEl.textContent = 'Please enter your name.';
+      errEl.style.display = 'block';
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      errEl.textContent = 'Please enter a valid email address.';
+      errEl.style.display = 'block';
+      return;
+    }
+
+    account = {
+      id: 'acct_' + Math.random().toString(36).slice(2, 10),
+      name,
+      email,
+      provider: pendingSignupProvider || 'email',
+      createdAt: new Date().toISOString()
+    };
+    localStorage.setItem('familytrip_account', JSON.stringify(account));
+    closeAccountModal();
+    showToast('Account created — welcome, ' + name.split(' ')[0] + '!');
     showPage('page-profile');
   }
 
@@ -2968,6 +3252,7 @@ const HTML = `<!DOCTYPE html>
   function switchTab(tab) {
     document.querySelectorAll('.nav-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
     document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
+    if (tab === 'globe') setTimeout(initGlobe, 50);
   }
 
   function switchCategory(page, cat) {
@@ -3250,6 +3535,7 @@ const HTML = `<!DOCTYPE html>
   (function init() {
     initHeroSlideshow();
     initSellSection();
+    initAirportList();
     if (profile) {
       initApp();
       showPage('page-app');
