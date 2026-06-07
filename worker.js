@@ -316,7 +316,26 @@ const TOOL_MAP = {
 
 // ─── Agent runner ─────────────────────────────────────────────────────────────
 
-async function runAgent(userMessage, history, apiKey, profile) {
+// Friendly "thinking" status text shown while a tool runs — gives the chat
+// a ChatGPT-style narrated thought process instead of a generic spinner.
+function toolStatusText(fnName, args) {
+  args = args || {};
+  switch (fnName) {
+    case 'web_search':          return `Searching the web for "${args.query || 'more details'}"…`;
+    case 'get_weather':         return `Checking the forecast for ${args.location || 'your destination'}…`;
+    case 'search_flights':      return `Looking up flights from ${args.origin || '?'} to ${args.destination || '?'}…`;
+    case 'search_hotels':       return `Finding hotels in ${args.location || 'your destination'}…`;
+    case 'destination_image':   return `Generating a photo of ${args.location || 'your destination'}…`;
+    case 'currency_info':       return `Checking the ${args.from_currency || '?'} → ${args.to_currency || '?'} exchange rate…`;
+    case 'find_activities':     return `Finding things to do in ${args.location || 'your destination'}…`;
+    case 'find_restaurants':    return `Looking for family-friendly restaurants in ${args.location || 'your destination'}…`;
+    case 'get_travel_tips':     return `Gathering travel tips for ${args.destination || 'your destination'}…`;
+    case 'find_local_transport':return `Checking local transport options in ${args.location || 'your destination'}…`;
+    default:                    return `Working on it…`;
+  }
+}
+
+async function runAgent(userMessage, history, apiKey, profile, emit) {
   const today = new Date().toISOString().split('T')[0];
 
   let profileContext = '';
@@ -419,6 +438,23 @@ Today's date: ${today}${profileContext}`;
     }
   };
 
+  // Reveal the final answer gradually (ChatGPT-style typewriter) by emitting
+  // it in small word-chunks with short pauses, instead of dumping it all at once.
+  const streamOutFinalAnswer = async (text) => {
+    if (!emit || !text) return;
+    const pieces = text.match(/\S+\s*|\s+/g) || [text];
+    let buf = '';
+    for (const piece of pieces) {
+      buf += piece;
+      if (buf.length >= 3) {
+        await emit({ type: 'chunk', text: buf });
+        buf = '';
+        await sleep(16);
+      }
+    }
+    if (buf) await emit({ type: 'chunk', text: buf });
+  };
+
   for (let iter = 0; iter < 12; iter++) {
     let data;
     try {
@@ -430,7 +466,9 @@ Today's date: ${today}${profileContext}`;
       if (e.code === 'tool_use_failed') {
         const fallback = await callGroq(messages, false);
         const fallbackMsg = fallback.choices[0].message;
-        return { response: fallbackMsg.content || '', tools_used: toolsUsed, images };
+        const text = fallbackMsg.content || '';
+        await streamOutFinalAnswer(text);
+        return { response: text, tools_used: toolsUsed, images };
       }
       throw e;
     }
@@ -438,7 +476,9 @@ Today's date: ${today}${profileContext}`;
     const msg = data.choices[0].message;
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      return { response: msg.content || '', tools_used: toolsUsed, images };
+      const text = msg.content || '';
+      await streamOutFinalAnswer(text);
+      return { response: text, tools_used: toolsUsed, images };
     }
 
     // Append assistant message with tool calls
@@ -448,13 +488,14 @@ Today's date: ${today}${profileContext}`;
       tool_calls: msg.tool_calls
     });
 
-    // Execute each tool call
+    // Execute each tool call, narrating what the agent is doing as it goes
     for (const tc of msg.tool_calls) {
       const fnName = tc.function.name;
       let args = {};
       try { args = JSON.parse(tc.function.arguments); } catch (_) {}
 
       toolsUsed.push({ tool: fnName, args });
+      if (emit) await emit({ type: 'status', tool: fnName, text: toolStatusText(fnName, args) });
 
       let result = '';
       const fn = TOOL_MAP[fnName];
@@ -474,6 +515,7 @@ Today's date: ${today}${profileContext}`;
           const parsed = JSON.parse(result);
           if (parsed.image_url && !images.includes(parsed.image_url)) {
             images.push(parsed.image_url);
+            if (emit) await emit({ type: 'image', url: parsed.image_url });
           }
         } catch (_) {}
       }
@@ -482,7 +524,10 @@ Today's date: ${today}${profileContext}`;
       const pollinationsMatches = (typeof result === 'string' ? result : '').match(/https:\/\/image\.pollinations\.ai\/prompt\/[^\s\)\]"']+/g);
       if (pollinationsMatches) {
         for (const u of pollinationsMatches) {
-          if (!images.includes(u)) images.push(u);
+          if (!images.includes(u)) {
+            images.push(u);
+            if (emit) await emit({ type: 'image', url: u });
+          }
         }
       }
 
@@ -496,7 +541,9 @@ Today's date: ${today}${profileContext}`;
 
   // Max iterations reached — return last assistant content if any
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
-  return { response: lastAssistant ? lastAssistant.content : 'Planning complete.', tools_used: toolsUsed, images };
+  const finalText = lastAssistant ? lastAssistant.content : 'Planning complete.';
+  await streamOutFinalAnswer(finalText);
+  return { response: finalText, tools_used: toolsUsed, images };
 }
 
 // ─── Structured search (Trips / Prices / For Me browsing) ────────────────────
@@ -651,10 +698,17 @@ const HTML = `<!DOCTYPE html>
       min-height: 100vh;
       flex-direction: column;
       align-items: stretch;
-      justify-content: flex-end;
       position: relative;
-      overflow: hidden;
       background: #262420;
+    }
+
+    .hero-viewport {
+      position: relative;
+      min-height: 100vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
     }
 
     /* Full-bleed rotating photo slideshow */
@@ -671,8 +725,10 @@ const HTML = `<!DOCTYPE html>
       background-size: cover;
       background-position: center;
       background-repeat: no-repeat;
+      background-color: #2f2c27;
+      background-image: linear-gradient(135deg, #4d473c, #2f2c27);
       opacity: 0;
-      transition: opacity 2.5s ease-in-out;
+      transition: opacity 2.5s ease-in-out, background-image 0.6s ease;
       transform: scale(1);
     }
 
@@ -763,10 +819,178 @@ const HTML = `<!DOCTYPE html>
       transform: scale(1.3);
     }
 
+    /* ── Selling section (below the fold, before sign-in) ── */
+    .sell-section {
+      position: relative;
+      z-index: 1;
+      background: var(--bg-dark);
+      padding: 72px 24px 88px;
+      border-top: 1px solid var(--border);
+    }
+
+    .sell-inner {
+      max-width: 1140px;
+      margin: 0 auto;
+    }
+
+    .sell-eyebrow {
+      display: inline-block;
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 3px;
+      text-transform: uppercase;
+      color: var(--accent);
+      margin-bottom: 14px;
+    }
+
+    .sell-title {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-weight: 600;
+      font-size: clamp(1.8rem, 4vw, 2.6rem);
+      color: var(--text-bright);
+      margin-bottom: 12px;
+      max-width: 640px;
+    }
+
+    .sell-sub {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      color: var(--text-main);
+      max-width: 620px;
+      line-height: 1.65;
+      margin-bottom: 44px;
+    }
+
+    .sell-features {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-bottom: 40px;
+    }
+
+    .sell-feature {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px 20px;
+    }
+
+    .sell-feature h3 {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 6px;
+    }
+
+    .sell-feature p {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.88rem;
+      color: var(--text-muted);
+      line-height: 1.55;
+    }
+
+    .sell-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px 24px;
+      margin-bottom: 18px;
+    }
+
+    .sell-card-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .sell-card-label {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--text-bright);
+    }
+
+    .sell-card-meta {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.74rem;
+      color: var(--text-dim);
+      font-style: italic;
+    }
+
+    .rate-row, .deal-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    .rate-chip {
+      flex: 1 1 140px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .rate-pair {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.74rem;
+      letter-spacing: 0.5px;
+      color: var(--text-muted);
+    }
+
+    .rate-val {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+
+    .deal-card {
+      flex: 1 1 220px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px 18px;
+      transition: border-color 0.4s ease, transform 0.4s ease;
+    }
+
+    .deal-card.refreshing { opacity: 0; transform: translateY(6px); }
+
+    .deal-city {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.2rem;
+      font-weight: 600;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+    }
+
+    .deal-range {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 2px;
+    }
+
+    .deal-note {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.76rem;
+      color: var(--text-muted);
+    }
+
     .login-card {
       position: relative;
       z-index: 2;
-      background: rgba(20, 24, 31, 0.6);
+      background: rgba(38, 36, 32, 0.6);
       backdrop-filter: blur(10px);
       -webkit-backdrop-filter: blur(10px);
       border: 1px solid rgba(245, 243, 239, 0.12);
@@ -869,7 +1093,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .profile-card {
-      background: rgba(20, 24, 31, 0.7);
+      background: rgba(38, 36, 32, 0.7);
       border: 1px solid rgba(245, 243, 239, 0.1);
       border-radius: 16px;
       padding: 40px 36px;
@@ -1535,6 +1759,25 @@ const HTML = `<!DOCTYPE html>
       border: 1px solid var(--border);
     }
 
+    /* Shown in place of an AI-generated photo if it fails to load */
+    .img-fallback {
+      width: 100%;
+      min-height: 140px;
+      max-height: 220px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 16px;
+      background: linear-gradient(135deg, var(--accent-glow), var(--bg-card));
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text-bright);
+    }
+
     .tools-row {
       display: flex;
       flex-wrap: wrap;
@@ -1553,38 +1796,66 @@ const HTML = `<!DOCTYPE html>
       font-size: 0.68rem;
     }
 
-    .typing-wrap {
+    /* ChatGPT-style narrated "thought process" while the agent works */
+    .thinking-steps {
       display: flex;
-      gap: 10px;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 4px;
     }
 
-    .typing-bubble {
-      background: var(--bg-card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      border-bottom-left-radius: 4px;
-      padding: 13px 16px;
+    .thinking-steps.collapsed {
+      opacity: 0.55;
+    }
+
+    .thought-step {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 9px;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-size: 0.82rem;
       color: var(--text-muted);
+      animation: thoughtIn 0.35s ease;
     }
 
-    .dots span {
-      display: inline-block;
+    .thought-step.done .thought-text { color: var(--text-dim); }
+    .thought-step.done .thought-dot { background: var(--text-dim); animation: none; }
+
+    .thought-step.active .thought-text { color: var(--text-main); }
+
+    .thought-dot {
+      flex-shrink: 0;
       width: 7px;
       height: 7px;
-      background: var(--accent);
       border-radius: 50%;
+      background: var(--accent);
       animation: dotPulse 1.3s infinite;
     }
-    .dots span:nth-child(2) { animation-delay: 0.18s; }
-    .dots span:nth-child(3) { animation-delay: 0.36s; }
+
+    @keyframes thoughtIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
 
     @keyframes dotPulse {
-      0%, 80%, 100% { transform: scale(0.5); opacity: 0.4; }
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.45; }
       40%            { transform: scale(1);   opacity: 1; }
+    }
+
+    /* Blinking caret shown at the end of text while it's still streaming in */
+    .caret {
+      display: inline-block;
+      width: 2px;
+      height: 1em;
+      margin-left: 2px;
+      vertical-align: text-bottom;
+      background: var(--accent);
+      animation: caretBlink 0.9s steps(1) infinite;
+    }
+
+    @keyframes caretBlink {
+      0%, 50% { opacity: 1; }
+      51%, 100% { opacity: 0; }
     }
 
     /* Input area */
@@ -1758,35 +2029,82 @@ const HTML = `<!DOCTYPE html>
 
 <!-- ═══ PAGE 1: LOGIN ═══════════════════════════════════════════════════════ -->
 <div id="page-login" class="page active">
-  <div class="hero-slideshow" id="hero-slideshow"></div>
-  <div class="hero-overlay"></div>
+  <div class="hero-viewport">
+    <div class="hero-slideshow" id="hero-slideshow"></div>
+    <div class="hero-overlay"></div>
 
-  <div class="hero-content">
-    <span class="hero-eyebrow">AI-Powered Travel Planning</span>
-    <h1 class="hero-headline">Unforgettable family journeys, planned by AI</h1>
-    <p class="hero-subtitle">From the Great Wall to the canals of Venice — get personalised, day-by-day itineraries crafted around your family's pace, ages and tastes.</p>
-    <div class="hero-dots" id="hero-dots"></div>
+    <div class="hero-content">
+      <span class="hero-eyebrow">AI-Powered Travel Planning</span>
+      <h1 class="hero-headline">Unforgettable family journeys, planned by AI</h1>
+      <p class="hero-subtitle">From the Great Wall to the canals of Venice — get personalised, day-by-day itineraries crafted around your family's pace, ages and tastes.</p>
+      <div class="hero-dots" id="hero-dots"></div>
 
-    <div class="login-card">
-      <div class="login-brand">
-        <h1>FamilyTripAI</h1>
-        <p>The smartest way to plan family travel</p>
+      <div class="login-card">
+        <div class="login-brand">
+          <h1>FamilyTripAI</h1>
+          <p>The smartest way to plan family travel</p>
+        </div>
+
+        <button class="auth-btn btn-google" onclick="beginSignup('google')">
+          <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/><\/svg>
+          Continue with Google
+        </button>
+
+        <button class="auth-btn btn-apple" onclick="beginSignup('apple')">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/><\/svg>
+          Continue with Apple
+        </button>
+
+        <div class="auth-sep">or</div>
+        <span class="guest-link" onclick="guestContinue()">Continue as guest</span>
       </div>
-
-      <button class="auth-btn btn-google" onclick="beginSignup('google')">
-        <svg viewBox="0 0 24 24" width="20" height="20"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/><\/svg>
-        Continue with Google
-      </button>
-
-      <button class="auth-btn btn-apple" onclick="beginSignup('apple')">
-        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/><\/svg>
-        Continue with Apple
-      </button>
-
-      <div class="auth-sep">or</div>
-      <span class="guest-link" onclick="guestContinue()">Continue as guest</span>
     </div>
   </div>
+
+  <!-- ── Selling section: features + live data teasers, refreshes every 20s ── -->
+  <section class="sell-section">
+    <div class="sell-inner">
+      <span class="sell-eyebrow">Why families choose FamilyTripAI</span>
+      <h2 class="sell-title">Everything you need to plan a trip, in one place — and it's free</h2>
+      <p class="sell-sub">AI-built day-by-day itineraries, real-time currency rates, and direct links to live fares on the booking sites you already trust. No spreadsheets, no guesswork — just a plan your whole family will enjoy.</p>
+
+      <div class="sell-features">
+        <div class="sell-feature">
+          <h3>AI-crafted itineraries</h3>
+          <p>Day-by-day plans tuned to your kids' ages, energy levels, dietary needs and your budget — built in seconds.</p>
+        </div>
+        <div class="sell-feature">
+          <h3>Live currency rates</h3>
+          <p>Real exchange rates pulled live and refreshed automatically, so you always know what your trip really costs.</p>
+        </div>
+        <div class="sell-feature">
+          <h3>Direct booking links</h3>
+          <p>Jump straight to Google Flights, Skyscanner, Booking.com and Airbnb to lock in real, live fares.</p>
+        </div>
+      </div>
+
+      <div class="sell-card">
+        <div class="sell-card-head">
+          <span class="sell-card-label">Live exchange rates</span>
+          <span class="sell-card-meta" id="sell-rates-meta">Updating…</span>
+        </div>
+        <div class="rate-row" id="sell-rates-row">
+          <div class="rate-chip"><span class="rate-pair">USD → EUR</span><span class="rate-val">—</span></div>
+          <div class="rate-chip"><span class="rate-pair">USD → GBP</span><span class="rate-val">—</span></div>
+          <div class="rate-chip"><span class="rate-pair">USD → JPY</span><span class="rate-val">—</span></div>
+          <div class="rate-chip"><span class="rate-pair">USD → ILS</span><span class="rate-val">—</span></div>
+        </div>
+      </div>
+
+      <div class="sell-card">
+        <div class="sell-card-head">
+          <span class="sell-card-label">Popular family destinations</span>
+          <span class="sell-card-meta">Estimated trip cost · family of 4 · 7 nights · rotates every 20s</span>
+        </div>
+        <div class="deal-row" id="sell-deals-row"></div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <!-- ═══ PAGE 2: PROFILE SETUP ═══════════════════════════════════════════════ -->
@@ -2159,8 +2477,14 @@ const HTML = `<!DOCTYPE html>
                   '?width=1600&height=1000&nologo=true&seed=' + slide.seed;
       const div = document.createElement('div');
       div.className = 'hero-slide' + (i === 0 ? ' active' : '');
-      div.style.backgroundImage = "url('" + url + "')";
       stage.appendChild(div);
+
+      // Keep the gradient placeholder visible until the photo actually loads —
+      // avoids a blank/broken slide if pollinations.ai is slow or unreachable.
+      const preload = new Image();
+      preload.onload = () => { div.style.backgroundImage = "url('" + url + "')"; };
+      preload.onerror = () => { /* keep gradient fallback */ };
+      preload.src = url;
 
       const dot = document.createElement('span');
       dot.className = 'hero-dot' + (i === 0 ? ' active' : '');
@@ -2178,6 +2502,77 @@ const HTML = `<!DOCTYPE html>
       slideEls[current].classList.add('active');
       dotEls[current].classList.add('active');
     }, 6000);
+  }
+
+  // ── Selling section: live currency ticker + rotating destination prices ──
+  const SELL_PAIRS = [['USD', 'EUR'], ['USD', 'GBP'], ['USD', 'JPY'], ['USD', 'ILS']];
+
+  async function loadSellRates() {
+    const row = document.getElementById('sell-rates-row');
+    const meta = document.getElementById('sell-rates-meta');
+    if (!row) return;
+    try {
+      const targets = SELL_PAIRS.map(p => p[1]).join(',');
+      const res = await fetch('https://api.frankfurter.app/latest?from=USD&to=' + encodeURIComponent(targets));
+      const data = await res.json();
+      const chips = row.querySelectorAll('.rate-chip');
+      SELL_PAIRS.forEach(([from, to], i) => {
+        const rate = data.rates && data.rates[to];
+        const valEl = chips[i] && chips[i].querySelector('.rate-val');
+        if (valEl) valEl.textContent = (rate != null) ? rate.toFixed(3) : '—';
+      });
+      if (meta) meta.textContent = 'Live · updated ' + new Date().toLocaleTimeString();
+    } catch (err) {
+      if (meta) meta.textContent = 'Live rates temporarily unavailable';
+    }
+  }
+
+  const SELL_DEALS = [
+    { city: 'Lisbon, Portugal',          range: '$1,450 – $2,100' },
+    { city: 'Tokyo, Japan',              range: '$3,200 – $4,800' },
+    { city: 'Costa Rica',                range: '$2,600 – $3,900' },
+    { city: 'Barcelona, Spain',          range: '$1,800 – $2,650' },
+    { city: 'Cape Town, South Africa',   range: '$2,100 – $3,300' },
+    { city: 'Reykjavik, Iceland',        range: '$2,900 – $4,200' },
+    { city: 'Bangkok, Thailand',         range: '$1,650 – $2,400' },
+    { city: 'Queenstown, New Zealand',   range: '$3,500 – $5,100' },
+    { city: 'Dubai, UAE',                range: '$2,800 – $4,300' },
+    { city: 'Mexico City, Mexico',       range: '$1,400 – $2,050' },
+    { city: 'Rome, Italy',               range: '$1,950 – $2,800' },
+    { city: 'Marrakech, Morocco',        range: '$1,350 – $1,950' }
+  ];
+  let sellDealOffset = 0;
+
+  function renderSellDeals() {
+    const row = document.getElementById('sell-deals-row');
+    if (!row) return;
+    const picks = [];
+    for (let i = 0; i < 3; i++) picks.push(SELL_DEALS[(sellDealOffset + i) % SELL_DEALS.length]);
+    sellDealOffset = (sellDealOffset + 3) % SELL_DEALS.length;
+
+    row.querySelectorAll('.deal-card').forEach(c => c.classList.add('refreshing'));
+    setTimeout(() => {
+      row.innerHTML = picks.map(d =>
+        '<div class="deal-card refreshing"><div class="deal-city">' + escHtml(d.city) + '</div>' +
+        '<div class="deal-range">' + escHtml(d.range) + '</div>' +
+        '<div class="deal-note">est. per family of 4 · 7 nights</div></div>'
+      ).join('');
+      requestAnimationFrame(() => {
+        row.querySelectorAll('.deal-card').forEach(c => c.classList.remove('refreshing'));
+      });
+    }, 220);
+  }
+
+  function initSellSection() {
+    const section = document.querySelector('.sell-section');
+    if (!section || section.dataset.ready) return;
+    section.dataset.ready = '1';
+
+    renderSellDeals();
+    loadSellRates();
+
+    setInterval(renderSellDeals, 20000);
+    setInterval(loadSellRates, 20000);
   }
 
   // ── Profile management ───────────────────────────────────────────────────
@@ -2370,6 +2765,17 @@ const HTML = `<!DOCTYPE html>
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
+  // AI-generated photos occasionally fail to load (slow generation, network) —
+  // swap broken <img> elements for a tasteful gradient placeholder instead of
+  // leaving a broken-image icon on screen.
+  function imgFallback(el, label) {
+    if (!el || !el.parentNode) return;
+    const div = document.createElement('div');
+    div.className = (el.className || '') + ' img-fallback';
+    div.textContent = label || 'Photo unavailable';
+    el.replaceWith(div);
+  }
+
   function addUser(text) {
     removeWelcome();
     const wrap = document.createElement('div');
@@ -2379,7 +2785,9 @@ const HTML = `<!DOCTYPE html>
     scroll();
   }
 
-  function addBot(text, toolsUsed, images) {
+  // Start an empty bot message bubble that we progressively fill in as the
+  // stream arrives — gives a ChatGPT-style "thinking, then typing" feel.
+  function startBotMessage() {
     const wrap = document.createElement('div');
     wrap.className = 'msg bot';
 
@@ -2390,53 +2798,67 @@ const HTML = `<!DOCTYPE html>
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
 
-    if (images && images.length > 0) {
-      const img = document.createElement('img');
-      img.src = images[0];
-      img.className = 'dest-img';
-      img.alt = 'Destination';
-      img.loading = 'lazy';
-      bubble.appendChild(img);
-    }
+    const thinking = document.createElement('div');
+    thinking.className = 'thinking-steps';
+    bubble.appendChild(thinking);
 
     const content = document.createElement('div');
-    content.innerHTML = marked.parse(text || '');
+    content.className = 'bot-content';
     bubble.appendChild(content);
-
-    if (toolsUsed && toolsUsed.length > 0) {
-      const row = document.createElement('div');
-      row.className = 'tools-row';
-      const seen = new Set();
-      toolsUsed.forEach(t => {
-        if (seen.has(t.tool)) return;
-        seen.add(t.tool);
-        const tag = document.createElement('span');
-        tag.className = 'tool-tag';
-        tag.textContent = t.tool.replace(/_/g, ' ');
-        row.appendChild(tag);
-      });
-      bubble.appendChild(row);
-    }
 
     wrap.appendChild(avatar);
     wrap.appendChild(bubble);
     messagesEl.appendChild(wrap);
     scroll();
+    return { bubble, thinking, content };
   }
 
-  function showTyping() {
-    const wrap = document.createElement('div');
-    wrap.className = 'typing-wrap';
-    wrap.id = 'typing';
-    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#97a87f,#7d8c5c);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI<\/div>' +
-      '<div class="typing-bubble"><div class="dots"><span><\/span><span><\/span><span><\/span><\/div>Searching and planning your trip...<\/div>';
-    messagesEl.appendChild(wrap);
+  function addThinkingStep(thinking, text) {
+    thinking.querySelectorAll('.thought-step.active').forEach(p => {
+      p.classList.remove('active');
+      p.classList.add('done');
+    });
+    const step = document.createElement('div');
+    step.className = 'thought-step active';
+    step.innerHTML = '<span class="thought-dot"></span><span class="thought-text"></span>';
+    step.querySelector('.thought-text').textContent = text;
+    thinking.appendChild(step);
     scroll();
   }
 
-  function hideTyping() {
-    const el = document.getElementById('typing');
-    if (el) el.remove();
+  function settleThinking(thinking) {
+    const steps = thinking.querySelectorAll('.thought-step');
+    if (!steps.length) { thinking.remove(); return; }
+    steps.forEach(s => { s.classList.remove('active'); s.classList.add('done'); });
+    thinking.classList.add('collapsed');
+  }
+
+  function addImageToBubble(bubble, url) {
+    if (bubble.querySelector('.dest-img') || bubble.querySelector('.img-fallback')) return;
+    const img = document.createElement('img');
+    img.src = url;
+    img.className = 'dest-img';
+    img.alt = 'Destination';
+    img.loading = 'lazy';
+    img.onerror = () => imgFallback(img, 'Destination photo unavailable — try again in a moment');
+    bubble.insertBefore(img, bubble.firstChild);
+    scroll();
+  }
+
+  function addToolTags(bubble, toolsUsed) {
+    if (!toolsUsed || !toolsUsed.length || bubble.querySelector('.tools-row')) return;
+    const row = document.createElement('div');
+    row.className = 'tools-row';
+    const seen = new Set();
+    toolsUsed.forEach(t => {
+      if (seen.has(t.tool)) return;
+      seen.add(t.tool);
+      const tag = document.createElement('span');
+      tag.className = 'tool-tag';
+      tag.textContent = t.tool.replace(/_/g, ' ');
+      row.appendChild(tag);
+    });
+    bubble.appendChild(row);
   }
 
   function scroll() { messagesEl.scrollTop = messagesEl.scrollHeight; }
@@ -2456,7 +2878,14 @@ const HTML = `<!DOCTYPE html>
     sendBtn.disabled = true;
 
     addUser(text);
-    showTyping();
+
+    const { bubble, thinking, content } = startBotMessage();
+    addThinkingStep(thinking, 'Thinking about your trip…');
+
+    let raw = '';
+    let images = [];
+    let toolsUsed = [];
+    let gotChunks = false;
 
     try {
       const res = await fetch('/chat', {
@@ -2465,22 +2894,67 @@ const HTML = `<!DOCTYPE html>
         body: JSON.stringify({ message: text, history, api_key: key, user_profile: profile })
       });
 
-      const data = await res.json();
-      hideTyping();
-
-      if (!res.ok) {
-        addBot('Error: ' + (data.detail || data.error || 'Server error'), [], []);
-      } else {
-        addBot(data.response, data.tools_used, data.images);
-        history.push({ role: 'user', content: text });
-        history.push({ role: 'assistant', content: data.response });
-        if (history.length > 20) history = history.slice(-20);
+      if (!res.ok || !res.body) {
+        let data = {};
+        try { data = await res.json(); } catch (_) {}
+        settleThinking(thinking);
+        content.innerHTML = marked.parse('**' + escHtml(data.detail || data.error || 'Server error') + '**');
+        sendBtn.disabled = false;
+        inputEl.focus();
+        return;
       }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split('\n');
+        buf = lines.pop();
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          let evt;
+          try { evt = JSON.parse(trimmed); } catch (_) { continue; }
+
+          if (evt.type === 'status') {
+            addThinkingStep(thinking, evt.text);
+          } else if (evt.type === 'chunk') {
+            if (!gotChunks) { gotChunks = true; settleThinking(thinking); }
+            raw += evt.text;
+            content.innerHTML = marked.parse(raw) + '<span class="caret"></span>';
+            scroll();
+          } else if (evt.type === 'image') {
+            if (!images.includes(evt.url)) { images.push(evt.url); addImageToBubble(bubble, evt.url); }
+          } else if (evt.type === 'done') {
+            toolsUsed = evt.tools_used || [];
+            if (evt.images) images = evt.images;
+            if (typeof evt.response === 'string' && evt.response) raw = evt.response;
+          } else if (evt.type === 'error') {
+            settleThinking(thinking);
+            content.innerHTML = marked.parse('**Error:** ' + escHtml(evt.error || 'Something went wrong.'));
+          }
+        }
+      }
+
+      settleThinking(thinking);
+      content.innerHTML = marked.parse(raw || '');
+      if (images && images.length) addImageToBubble(bubble, images[0]);
+      addToolTags(bubble, toolsUsed);
+
+      history.push({ role: 'user', content: text });
+      history.push({ role: 'assistant', content: raw });
+      if (history.length > 20) history = history.slice(-20);
     } catch (err) {
-      hideTyping();
-      addBot('Network error: ' + err.message, [], []);
+      settleThinking(thinking);
+      content.innerHTML = marked.parse('**Network error:** ' + escHtml(err.message));
     }
 
+    scroll();
     sendBtn.disabled = false;
     inputEl.focus();
   }
@@ -2734,7 +3208,7 @@ const HTML = `<!DOCTYPE html>
             const card = document.createElement('div');
             card.className = 'reco-card';
             card.innerHTML =
-              '<img src="' + imgUrl + '" alt="' + escAttr(it.destination || '') + '" loading="lazy" />' +
+              '<img src="' + imgUrl + '" alt="' + escAttr(it.destination || '') + '" data-dest="' + escAttr(it.destination || 'Destination photo unavailable') + '" loading="lazy" onerror="imgFallback(this, this.dataset.dest)" />' +
               '<div class="reco-body">' +
                 '<div class="reco-dest">' + escHtml(it.destination || '') + '</div>' +
                 '<div class="reco-why">' + escHtml(it.why || '') + '</div>' +
@@ -2775,6 +3249,7 @@ const HTML = `<!DOCTYPE html>
   // ── Init ────────────────────────────────────────────────────────────────
   (function init() {
     initHeroSlideshow();
+    initSellSection();
     if (profile) {
       initApp();
       showPage('page-app');
@@ -2798,7 +3273,7 @@ const CORS = {
 // ─── Main handler ─────────────────────────────────────────────────────────────
 
 export default {
-  async fetch(request) {
+  async fetch(request, env, ctx) {
     const url = new URL(request.url);
     const method = request.method;
 
@@ -2843,19 +3318,34 @@ export default {
         );
       }
 
-      try {
-        const result = await runAgent(message.trim(), history, api_key, user_profile || null);
-        return new Response(JSON.stringify(result), {
-          status: 200,
-          headers: { ...CORS, 'Content-Type': 'application/json' }
-        });
-      } catch (err) {
-        console.error('Agent error:', err);
-        return new Response(
-          JSON.stringify({ error: err.message || 'Internal server error' }),
-          { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
-        );
-      }
+      // Stream the agent's progress (tool "thoughts" + the final answer,
+      // word by word) to the client as newline-delimited JSON so the chat
+      // can render it ChatGPT-style instead of waiting on one big response.
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      const encoder = new TextEncoder();
+      const emit = async (event) => {
+        try { await writer.write(encoder.encode(JSON.stringify(event) + '\n')); } catch (_) {}
+      };
+
+      const run = (async () => {
+        try {
+          const result = await runAgent(message.trim(), history, api_key, user_profile || null, emit);
+          await emit({ type: 'done', tools_used: result.tools_used, images: result.images, response: result.response });
+        } catch (err) {
+          console.error('Agent error:', err);
+          await emit({ type: 'error', error: err.message || 'Internal server error' });
+        } finally {
+          try { await writer.close(); } catch (_) {}
+        }
+      })();
+
+      if (ctx && ctx.waitUntil) ctx.waitUntil(run);
+
+      return new Response(readable, {
+        status: 200,
+        headers: { ...CORS, 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-cache' }
+      });
     }
 
     // POST /search → structured browsing data for Trips / Prices / For Me
