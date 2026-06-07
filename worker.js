@@ -491,6 +491,101 @@ Today's date: ${today}${profileContext}`;
   return { response: lastAssistant ? lastAssistant.content : 'Planning complete.', tools_used: toolsUsed, images };
 }
 
+// ─── Structured search (Trips / Prices / For Me browsing) ────────────────────
+
+async function runSearch(category, params, apiKey, profile) {
+  const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+  const askForJSON = async (prompt) => {
+    const body = {
+      model: 'llama-3.1-8b-instant',
+      messages: [
+        { role: 'system', content: 'You are a travel data assistant. Reply with ONLY valid JSON matching the requested shape — no markdown fences, no commentary.' },
+        { role: 'user', content: prompt }
+      ],
+      max_tokens: 2048,
+      response_format: { type: 'json_object' }
+    };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify(body)
+      });
+      const text = await resp.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { data = null; }
+      if (resp.ok) return data;
+      if (resp.status === 429 && attempt < 2) {
+        const match = /try again in ([\d.]+)s/i.exec(text);
+        const waitMs = match ? Math.min(parseFloat(match[1]) * 1000 + 500, 20000) : 5000;
+        await sleep(waitMs);
+        continue;
+      }
+      throw new Error(`Groq API error ${resp.status}: ${text}`);
+    }
+  };
+
+  let familyNote = '';
+  if (profile && profile.name && profile.name !== 'Guest') {
+    familyNote = `Family: ${profile.adults || 2} adult(s), ${profile.children || 0} child(ren)` +
+      `${profile.children_ages ? ' (ages ' + profile.children_ages + ')' : ''}. ` +
+      `Travel style: ${profile.travel_style || 'balanced'}. Budget: ${profile.budget || 'moderate'}.`;
+  }
+
+  let prompt = '';
+  let links = {};
+
+  if (category === 'flights') {
+    const { origin, destination, departure_date, return_date = '', passengers = 1 } = params;
+    links = {
+      'Google Flights': `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(origin)}+to+${encodeURIComponent(destination)}+${departure_date}`,
+      'Skyscanner': `https://www.skyscanner.com/transport/flights/${encodeURIComponent(String(origin).toLowerCase())}/${encodeURIComponent(String(destination).toLowerCase())}/${(departure_date || '').replace(/-/g, '')}`,
+      'Kayak': `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departure_date}${return_date ? '/' + return_date : ''}/${passengers}adults`
+    };
+    prompt = `Generate 6 realistic, varied example flight options from ${origin} to ${destination}, departing ${departure_date}${return_date ? ', returning ' + return_date : ''}, for ${passengers} passenger(s). ${familyNote}
+These are illustrative planning ESTIMATES (not live bookings) — vary airlines, prices, durations and stop counts realistically for this route.
+Reply with ONLY this JSON shape:
+{"items": [{"airline": "string", "price_usd": number, "duration": "e.g. 9h 25m", "stops": number, "departure_time": "e.g. 08:40", "arrival_time": "e.g. 17:05", "notes": "short family-relevant note"}]}`;
+  } else if (category === 'hotels') {
+    const { location, checkin, checkout, guests = 2, rooms = 1 } = params;
+    links = {
+      'Booking.com': `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`,
+      'Airbnb': `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`,
+      'Hotels.com': `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`
+    };
+    prompt = `Generate 6 realistic, varied example family-friendly hotel options in ${location} for check-in ${checkin}, check-out ${checkout}, ${guests} guests, ${rooms} room(s). ${familyNote}
+These are illustrative planning ESTIMATES (not live bookings) — vary names, star ratings, prices and amenities realistically for this destination.
+Reply with ONLY this JSON shape:
+{"items": [{"name": "string", "stars": number (1-5), "price_per_night_usd": number, "rating": number (1.0-5.0), "amenities": ["pool","kids club"], "notes": "short family-relevant note"}]}`;
+  } else if (category === 'activities') {
+    const { location, activity_type = 'family' } = params;
+    prompt = `Generate 8 realistic, varied ${activity_type} activities and attractions in ${location} that suit families with children. ${familyNote}
+Reply with ONLY this JSON shape:
+{"items": [{"name": "string", "category": "e.g. museum, park, beach, theme park, tour", "price_usd": number (per person; 0 if free), "duration": "e.g. 2-3 hours", "min_age": number, "rating": number (1.0-5.0), "notes": "short family-relevant note"}]}`;
+  } else if (category === 'recommendations') {
+    prompt = `Suggest 6 great family travel destinations tailored to this family. ${familyNote || 'No specific profile given — suggest broadly appealing family destinations.'}
+For each, give a one-line reason it suits this family, the best season/months to visit, and a rough total trip budget estimate in USD for the whole family for one week.
+Reply with ONLY this JSON shape:
+{"items": [{"destination": "city, country", "why": "short reason tailored to the family", "best_time": "e.g. April-June", "est_budget_usd": number, "highlight": "one standout family activity there"}]}`;
+  } else {
+    throw new Error(`Unknown search category: ${category}`);
+  }
+
+  const data = await askForJSON(prompt);
+  const content = (data && data.choices && data.choices[0].message.content) || '{}';
+  let items = [];
+  try {
+    const parsed = JSON.parse(content);
+    items = Array.isArray(parsed.items) ? parsed.items : [];
+  } catch (_) {
+    items = [];
+  }
+
+  return { category, items, links, params };
+}
+
 // ─── HTML ─────────────────────────────────────────────────────────────────────
 
 const HTML = `<!DOCTYPE html>
@@ -505,6 +600,7 @@ const HTML = `<!DOCTYPE html>
   <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    .hidden { display: none !important; }
 
     :root {
       --bg-dark:     #080c14;
@@ -1025,6 +1121,249 @@ const HTML = `<!DOCTYPE html>
     }
     .settings-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-main); }
 
+    /* Persistent nav bar */
+    .app-nav {
+      display: flex;
+      gap: 4px;
+      margin-left: 28px;
+    }
+    .nav-tab {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      font-weight: 500;
+      font-family: 'Inter', system-ui, sans-serif;
+      padding: 7px 15px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .nav-tab:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
+    .nav-tab.active { background: rgba(59,130,246,0.14); color: var(--text-bright); }
+
+    .tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
+    .tab-panel.active { display: flex; }
+
+    /* Browse pages (Trips / Prices / For Me) */
+    .browse-wrap {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px 24px 60px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .browse-inner { width: 100%; max-width: 980px; }
+
+    .browse-heading h2 {
+      font-family: 'Playfair Display', Georgia, serif;
+      font-size: 1.5rem;
+      font-weight: 600;
+      color: var(--text-bright);
+      letter-spacing: -0.3px;
+    }
+    .browse-heading p { color: var(--text-muted); font-size: 0.86rem; margin-top: 4px; }
+
+    .subnav { display: flex; gap: 8px; margin: 18px 0 16px; }
+    .subnav-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      font-weight: 500;
+      padding: 7px 16px;
+      border-radius: 20px;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s, border-color 0.15s;
+    }
+    .subnav-btn:hover { color: var(--text-main); }
+    .subnav-btn.active { background: rgba(59,130,246,0.14); border-color: var(--accent-dim); color: var(--text-bright); }
+
+    .search-form {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
+      margin-bottom: 18px;
+    }
+    .search-form.hidden { display: none; }
+    .search-form input, .search-form select {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-bright);
+      font-size: 0.84rem;
+      font-family: 'Inter', system-ui, sans-serif;
+      padding: 9px 12px;
+      flex: 1 1 160px;
+      min-width: 0;
+    }
+    .search-form input:focus, .search-form select:focus { outline: none; border-color: var(--accent); }
+    .search-form input::placeholder { color: var(--text-dim); }
+    .search-form button {
+      flex: 0 0 auto;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      font-family: 'Inter', system-ui, sans-serif;
+      padding: 9px 22px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .search-form button:hover { background: var(--accent-dim); }
+    .search-form button:disabled { opacity: 0.6; cursor: default; }
+
+    .filter-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 18px;
+      align-items: center;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px 16px;
+      margin-bottom: 18px;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+    .filter-bar.hidden { display: none; }
+    .filter-bar label { display: flex; align-items: center; gap: 7px; }
+    .filter-bar select {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-bright);
+      font-size: 0.78rem;
+      padding: 5px 9px;
+      font-family: 'Inter', system-ui, sans-serif;
+    }
+    .filter-bar input[type="range"] { accent-color: var(--accent); }
+
+    .booking-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
+    .booking-links a {
+      font-size: 0.78rem;
+      color: var(--accent);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 6px 14px;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .booking-links a:hover { border-color: var(--accent-dim); background: rgba(59,130,246,0.08); }
+
+    .result-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+      gap: 14px;
+    }
+    .result-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .result-card .rc-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
+    .result-card .rc-title { font-weight: 600; color: var(--text-bright); font-size: 0.94rem; line-height: 1.3; }
+    .result-card .rc-price { font-weight: 700; color: var(--green); font-size: 1.02rem; white-space: nowrap; }
+    .result-card .rc-meta { font-size: 0.78rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 6px 12px; }
+    .result-card .rc-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .result-card .rc-tag {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 2px 9px;
+    }
+    .result-card .rc-note { font-size: 0.8rem; color: var(--text-main); line-height: 1.45; }
+
+    .browse-empty, .browse-loading, .browse-error {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 0.86rem;
+      padding: 40px 20px;
+    }
+    .browse-error { color: #f87171; }
+
+    .reco-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .reco-card img { width: 100%; height: 150px; object-fit: cover; display: block; }
+    .reco-card .reco-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 7px; }
+    .reco-card .reco-dest { font-family: 'Playfair Display', Georgia, serif; font-size: 1.08rem; font-weight: 600; color: var(--text-bright); }
+    .reco-card .reco-why { font-size: 0.82rem; color: var(--text-main); line-height: 1.45; }
+    .reco-card .reco-meta { font-size: 0.76rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
+    .reco-card .reco-plan {
+      align-self: flex-start;
+      margin-top: 4px;
+      background: transparent;
+      border: 1px solid var(--accent-dim);
+      color: var(--accent);
+      font-size: 0.78rem;
+      font-weight: 600;
+      font-family: 'Inter', system-ui, sans-serif;
+      border-radius: 18px;
+      padding: 6px 16px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .reco-card .reco-plan:hover { background: rgba(59,130,246,0.1); }
+
+    .price-tools {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      margin-bottom: 18px;
+    }
+    .price-tool-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 18px;
+      flex: 1 1 260px;
+    }
+    .price-tool-card h3 { font-size: 0.9rem; color: var(--text-bright); font-weight: 600; margin-bottom: 10px; }
+    .price-tool-card .pt-row { display: flex; gap: 8px; }
+    .price-tool-card input, .price-tool-card select {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text-bright);
+      font-size: 0.8rem;
+      font-family: 'Inter', system-ui, sans-serif;
+      padding: 8px 10px;
+      flex: 1;
+      min-width: 0;
+    }
+    .price-tool-card button {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: 'Inter', system-ui, sans-serif;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    .price-tool-card button:hover { background: var(--accent-dim); }
+    .price-tool-result { margin-top: 12px; font-size: 0.84rem; color: var(--text-main); line-height: 1.6; }
+    .price-tool-result .pt-rate { color: var(--green); font-weight: 700; }
+
     /* Chat body */
     .chat-body {
       flex: 1;
@@ -1389,6 +1728,12 @@ const HTML = `<!DOCTYPE html>
       .hero-content { padding: 0 20px 40px; gap: 18px; }
       .hero-headline { max-width: 100%; }
       .hero-subtitle { max-width: 100%; }
+      .app-nav { margin-left: 10px; gap: 2px; }
+      .nav-tab { padding: 6px 10px; font-size: 0.78rem; }
+      .user-name { display: none; }
+      .browse-wrap { padding: 18px 14px 50px; }
+      .search-form { padding: 14px; }
+      .price-tools { flex-direction: column; }
     }
   </style>
 </head>
@@ -1539,6 +1884,12 @@ const HTML = `<!DOCTYPE html>
 
   <header class="app-header">
     <div class="app-brand">FamilyTripAI</div>
+    <nav class="app-nav">
+      <button class="nav-tab active" data-tab="chat" onclick="switchTab('chat')">Chat</button>
+      <button class="nav-tab" data-tab="trips" onclick="switchTab('trips')">Trips</button>
+      <button class="nav-tab" data-tab="prices" onclick="switchTab('prices')">Prices</button>
+      <button class="nav-tab" data-tab="forme" onclick="switchTab('forme')">For Me</button>
+    </nav>
     <div class="app-header-right">
       <span class="key-pill missing" id="key-status">No key set</span>
       <div class="user-avatar" id="user-avatar">?</div>
@@ -1549,30 +1900,187 @@ const HTML = `<!DOCTYPE html>
     </div>
   </header>
 
-  <div class="chat-body">
-    <div id="messages">
-      <div class="welcome" id="welcome">
-        <div class="welcome-logo">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+  <!-- TAB: Chat -->
+  <div class="tab-panel active" id="tab-chat" data-tab="chat">
+    <div class="chat-body">
+      <div id="messages">
+        <div class="welcome" id="welcome">
+          <div class="welcome-logo">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+          </div>
+          <h2 id="welcome-heading">Where is your family headed?</h2>
+          <p id="welcome-sub">Tell me your destination, travel dates, and any preferences. I will search flights, hotels, weather, activities, restaurants and build you a complete family itinerary.</p>
+          <div class="profile-chips" id="welcome-chips"></div>
         </div>
-        <h2 id="welcome-heading">Where is your family headed?</h2>
-        <p id="welcome-sub">Tell me your destination, travel dates, and any preferences. I will search flights, hotels, weather, activities, restaurants and build you a complete family itinerary.</p>
-        <div class="profile-chips" id="welcome-chips"></div>
+      </div>
+
+      <div class="input-area">
+        <div class="suggestions">
+          <span class="suggestion" onclick="fill(this)">Week in Paris, 2 adults 2 kids</span>
+          <span class="suggestion" onclick="fill(this)">5 days in Bali from London, July 2026</span>
+          <span class="suggestion" onclick="fill(this)">Thailand 4 weeks, 7 people, kosher, kids 5-15</span>
+          <span class="suggestion" onclick="fill(this)">Japan family trip with toddlers, September</span>
+        </div>
+        <div class="input-row">
+          <textarea id="user-input" rows="1" placeholder="Describe your trip — destination, dates, family size..."></textarea>
+          <button id="send-btn" onclick="send()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+          </button>
+        </div>
       </div>
     </div>
+  </div>
 
-    <div class="input-area">
-      <div class="suggestions">
-        <span class="suggestion" onclick="fill(this)">Week in Paris, 2 adults 2 kids</span>
-        <span class="suggestion" onclick="fill(this)">5 days in Bali from London, July 2026</span>
-        <span class="suggestion" onclick="fill(this)">Thailand 4 weeks, 7 people, kosher, kids 5-15</span>
-        <span class="suggestion" onclick="fill(this)">Japan family trip with toddlers, September</span>
+  <!-- TAB: Trips — browse & filter flights / hotels / activities -->
+  <div class="tab-panel" id="tab-trips" data-tab="trips">
+    <div class="browse-wrap">
+      <div class="browse-inner">
+        <div class="browse-heading">
+          <h2>Browse your trip</h2>
+          <p>Search flights, hotels and activities, then filter and sort the results to fit your family.</p>
+        </div>
+
+        <div class="subnav">
+          <button class="subnav-btn active" data-cat="flights" onclick="switchCategory('trips','flights')">Flights</button>
+          <button class="subnav-btn" data-cat="hotels" onclick="switchCategory('trips','hotels')">Hotels</button>
+          <button class="subnav-btn" data-cat="activities" onclick="switchCategory('trips','activities')">Activities</button>
+        </div>
+
+        <form class="search-form" id="trips-form-flights" onsubmit="return submitSearch(event,'trips','flights')">
+          <input name="origin" placeholder="From (city or airport)" required />
+          <input name="destination" placeholder="To (city or airport)" required />
+          <input type="date" name="departure_date" required />
+          <input type="date" name="return_date" />
+          <input type="number" name="passengers" min="1" value="1" title="Passengers" />
+          <button type="submit">Search flights</button>
+        </form>
+
+        <form class="search-form hidden" id="trips-form-hotels" onsubmit="return submitSearch(event,'trips','hotels')">
+          <input name="location" placeholder="Destination" required />
+          <input type="date" name="checkin" required />
+          <input type="date" name="checkout" required />
+          <input type="number" name="guests" min="1" value="2" title="Guests" />
+          <input type="number" name="rooms" min="1" value="1" title="Rooms" />
+          <button type="submit">Search hotels</button>
+        </form>
+
+        <form class="search-form hidden" id="trips-form-activities" onsubmit="return submitSearch(event,'trips','activities')">
+          <input name="location" placeholder="Destination" required />
+          <input name="activity_type" placeholder="Type — family, adventure, cultural, beach..." value="family" />
+          <button type="submit">Find activities</button>
+        </form>
+
+        <div class="filter-bar hidden" id="trips-filters">
+          <label>Sort
+            <select id="trips-sort" onchange="applyBrowseFilters('trips')">
+              <option value="price-asc">Price: low to high</option>
+              <option value="price-desc">Price: high to low</option>
+              <option value="rating-desc">Rating: best first</option>
+            </select>
+          </label>
+          <label>Max price (USD)
+            <input type="range" id="trips-maxprice" min="0" max="3000" step="50" value="3000" oninput="applyBrowseFilters('trips')" />
+            <span id="trips-maxprice-val">3000</span>
+          </label>
+          <label class="hidden" id="trips-stops-wrap">Max stops
+            <select id="trips-stops" onchange="applyBrowseFilters('trips')">
+              <option value="9">Any</option>
+              <option value="0">Nonstop</option>
+              <option value="1">1 or fewer</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="booking-links" id="trips-links"></div>
+        <div id="trips-results"></div>
       </div>
-      <div class="input-row">
-        <textarea id="user-input" rows="1" placeholder="Describe your trip — destination, dates, family size..."></textarea>
-        <button id="send-btn" onclick="send()">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
-        </button>
+    </div>
+  </div>
+
+  <!-- TAB: Prices — price comparison & budget tools -->
+  <div class="tab-panel" id="tab-prices" data-tab="prices">
+    <div class="browse-wrap">
+      <div class="browse-inner">
+        <div class="browse-heading">
+          <h2>Prices &amp; budget</h2>
+          <p>Compare flight and hotel price ranges, sorted cheapest first, and check live currency rates.</p>
+        </div>
+
+        <div class="price-tools">
+          <div class="price-tool-card">
+            <h3>Currency converter</h3>
+            <div class="pt-row">
+              <input id="price-curr-amount" type="number" value="100" min="0" />
+              <select id="price-curr-from">
+                <option>USD</option><option>EUR</option><option>GBP</option><option>ILS</option>
+                <option>JPY</option><option>AUD</option><option>CAD</option><option>THB</option>
+              </select>
+              <span style="align-self:center;color:var(--text-muted)">→</span>
+              <select id="price-curr-to">
+                <option>EUR</option><option>USD</option><option>GBP</option><option>ILS</option>
+                <option>JPY</option><option>AUD</option><option>CAD</option><option>THB</option>
+              </select>
+              <button onclick="convertCurrency()">Convert</button>
+            </div>
+            <div class="price-tool-result" id="price-curr-result"></div>
+          </div>
+        </div>
+
+        <div class="subnav">
+          <button class="subnav-btn active" data-cat="flights" onclick="switchCategory('prices','flights')">Flight prices</button>
+          <button class="subnav-btn" data-cat="hotels" onclick="switchCategory('prices','hotels')">Hotel prices</button>
+        </div>
+
+        <form class="search-form" id="prices-form-flights" onsubmit="return submitSearch(event,'prices','flights')">
+          <input name="origin" placeholder="From (city or airport)" required />
+          <input name="destination" placeholder="To (city or airport)" required />
+          <input type="date" name="departure_date" required />
+          <input type="date" name="return_date" />
+          <input type="number" name="passengers" min="1" value="1" title="Passengers" />
+          <button type="submit">Compare prices</button>
+        </form>
+
+        <form class="search-form hidden" id="prices-form-hotels" onsubmit="return submitSearch(event,'prices','hotels')">
+          <input name="location" placeholder="Destination" required />
+          <input type="date" name="checkin" required />
+          <input type="date" name="checkout" required />
+          <input type="number" name="guests" min="1" value="2" title="Guests" />
+          <input type="number" name="rooms" min="1" value="1" title="Rooms" />
+          <button type="submit">Compare prices</button>
+        </form>
+
+        <div class="filter-bar hidden" id="prices-filters">
+          <label>Sort
+            <select id="prices-sort" onchange="applyBrowseFilters('prices')">
+              <option value="price-asc" selected>Price: low to high</option>
+              <option value="price-desc">Price: high to low</option>
+              <option value="rating-desc">Rating: best first</option>
+            </select>
+          </label>
+          <label>Max price (USD)
+            <input type="range" id="prices-maxprice" min="0" max="3000" step="50" value="3000" oninput="applyBrowseFilters('prices')" />
+            <span id="prices-maxprice-val">3000</span>
+          </label>
+        </div>
+
+        <div class="booking-links" id="prices-links"></div>
+        <div id="prices-results"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TAB: For Me — personalised picks based on profile -->
+  <div class="tab-panel" id="tab-forme" data-tab="forme">
+    <div class="browse-wrap">
+      <div class="browse-inner">
+        <div class="browse-heading">
+          <h2>For you</h2>
+          <p>Destination ideas curated around your family's profile — ages, dietary needs, style and budget.</p>
+        </div>
+        <div class="search-form" style="justify-content:flex-end">
+          <button type="button" onclick="loadRecommendations()" id="forme-btn">Get personalised picks</button>
+        </div>
+        <div id="forme-results"></div>
       </div>
     </div>
   </div>
@@ -1958,6 +2466,293 @@ const HTML = `<!DOCTYPE html>
     inputEl.focus();
   }
 
+  // ── Browse & search (Trips / Prices / For Me) ────────────────────────────
+  const browseState = {
+    trips:  { category: 'flights', items: [], links: {} },
+    prices: { category: 'flights', items: [], links: {} }
+  };
+
+  function switchTab(tab) {
+    document.querySelectorAll('.nav-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.dataset.tab === tab));
+  }
+
+  function switchCategory(page, cat) {
+    browseState[page].category = cat;
+    document.querySelectorAll('#tab-' + page + ' .subnav-btn').forEach(b => b.classList.toggle('active', b.dataset.cat === cat));
+    document.querySelectorAll('#tab-' + page + ' .search-form').forEach(f => {
+      f.classList.toggle('hidden', f.id !== page + '-form-' + cat);
+    });
+    browseState[page].items = [];
+    browseState[page].links = {};
+    document.getElementById(page + '-results').innerHTML = '';
+    document.getElementById(page + '-links').innerHTML = '';
+    const filterBar = document.getElementById(page + '-filters');
+    if (filterBar) filterBar.classList.add('hidden');
+  }
+
+  function escAttr(s) { return escHtml(s).replace(/"/g, '&quot;'); }
+
+  function renderBookingLinks(page, links) {
+    const wrap = document.getElementById(page + '-links');
+    wrap.innerHTML = '';
+    Object.keys(links || {}).forEach(label => {
+      const a = document.createElement('a');
+      a.href = links[label];
+      a.target = '_blank';
+      a.rel = 'noopener noreferrer';
+      a.textContent = 'Open in ' + label;
+      wrap.appendChild(a);
+    });
+  }
+
+  function priceOf(item) {
+    const p = (item.price_usd !== undefined) ? item.price_usd : item.price_per_night_usd;
+    return typeof p === 'number' ? p : 0;
+  }
+  function ratingOf(item) {
+    return typeof item.rating === 'number' ? item.rating : 0;
+  }
+
+  function renderBrowseCards(page) {
+    const state = browseState[page];
+    const grid = document.getElementById(page + '-results');
+    grid.innerHTML = '';
+
+    if (!state.items.length) {
+      grid.innerHTML = '<div class="browse-empty">No results yet — run a search above.</div>';
+      return;
+    }
+
+    const sortSel = document.getElementById(page + '-sort');
+    const maxPriceEl = document.getElementById(page + '-maxprice');
+    const stopsSel = document.getElementById(page + '-stops');
+    const sort = sortSel ? sortSel.value : 'price-asc';
+    const maxPrice = maxPriceEl ? parseInt(maxPriceEl.value, 10) : Infinity;
+    const maxStops = (stopsSel && state.category === 'flights') ? parseInt(stopsSel.value, 10) : Infinity;
+
+    let items = state.items.filter(it => {
+      if (priceOf(it) > maxPrice) return false;
+      if (state.category === 'flights' && typeof it.stops === 'number' && it.stops > maxStops) return false;
+      return true;
+    });
+
+    items = items.slice().sort((a, b) => {
+      if (sort === 'price-asc') return priceOf(a) - priceOf(b);
+      if (sort === 'price-desc') return priceOf(b) - priceOf(a);
+      if (sort === 'rating-desc') return ratingOf(b) - ratingOf(a);
+      return 0;
+    });
+
+    if (!items.length) {
+      grid.innerHTML = '<div class="browse-empty">No results match your filters — try widening the price range.</div>';
+      return;
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'result-grid';
+
+    items.forEach(it => {
+      const card = document.createElement('div');
+      card.className = 'result-card';
+
+      let title = '', price = '', metaParts = [], tags = [];
+      const note = it.notes || '';
+
+      if (state.category === 'flights') {
+        title = it.airline || 'Flight option';
+        price = '$' + Math.round(priceOf(it));
+        metaParts = [
+          (it.departure_time && it.arrival_time) ? (it.departure_time + ' → ' + it.arrival_time) : '',
+          it.duration || '',
+          (typeof it.stops === 'number') ? (it.stops === 0 ? 'Nonstop' : (it.stops + ' stop' + (it.stops > 1 ? 's' : ''))) : ''
+        ].filter(Boolean);
+      } else if (state.category === 'hotels') {
+        title = it.name || 'Hotel';
+        price = '$' + Math.round(priceOf(it)) + '/night';
+        metaParts = [
+          it.stars ? (it.stars + '★ stars') : '',
+          it.rating ? ('Rating ' + it.rating) : ''
+        ].filter(Boolean);
+        tags = Array.isArray(it.amenities) ? it.amenities : [];
+      } else if (state.category === 'activities') {
+        title = it.name || 'Activity';
+        price = priceOf(it) > 0 ? ('$' + Math.round(priceOf(it)) + '/person') : 'Free';
+        metaParts = [
+          it.category || '',
+          it.duration || '',
+          it.rating ? ('Rating ' + it.rating) : '',
+          (typeof it.min_age === 'number' && it.min_age > 0) ? ('Ages ' + it.min_age + '+') : ''
+        ].filter(Boolean);
+      }
+
+      card.innerHTML =
+        '<div class="rc-top"><div class="rc-title">' + escHtml(title) + '</div><div class="rc-price">' + escHtml(price) + '</div></div>' +
+        (metaParts.length ? '<div class="rc-meta">' + metaParts.map(m => '<span>' + escHtml(m) + '</span>').join('') + '</div>' : '') +
+        (tags.length ? '<div class="rc-tags">' + tags.map(t => '<span class="rc-tag">' + escHtml(t) + '</span>').join('') + '</div>' : '') +
+        (note ? '<div class="rc-note">' + escHtml(note) + '</div>' : '');
+
+      wrap.appendChild(card);
+    });
+
+    grid.appendChild(wrap);
+  }
+
+  function applyBrowseFilters(page) {
+    const maxPriceEl = document.getElementById(page + '-maxprice');
+    const valEl = document.getElementById(page + '-maxprice-val');
+    if (maxPriceEl && valEl) valEl.textContent = maxPriceEl.value;
+    renderBrowseCards(page);
+  }
+
+  async function submitSearch(evt, page, category) {
+    evt.preventDefault();
+    const form = evt.target;
+    const key = getKey();
+    if (!key || !key.startsWith('gsk_')) { openSettings(); return false; }
+
+    const params = {};
+    new FormData(form).forEach((v, k) => { params[k] = v; });
+    if (params.passengers) params.passengers = parseInt(params.passengers, 10) || 1;
+    if (params.guests) params.guests = parseInt(params.guests, 10) || 1;
+    if (params.rooms) params.rooms = parseInt(params.rooms, 10) || 1;
+
+    const btn = form.querySelector('button[type="submit"]');
+    const originalLabel = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = 'Searching...';
+
+    const grid = document.getElementById(page + '-results');
+    grid.innerHTML = '<div class="browse-loading">Searching ' + escHtml(category) + ' for your family...</div>';
+    document.getElementById(page + '-links').innerHTML = '';
+    const filterBar = document.getElementById(page + '-filters');
+    if (filterBar) filterBar.classList.add('hidden');
+
+    try {
+      const res = await fetch('/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category, params, api_key: key, user_profile: profile })
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        grid.innerHTML = '<div class="browse-error">' + escHtml(data.error || 'Search failed.') + '</div>';
+      } else {
+        browseState[page].category = category;
+        browseState[page].items = data.items || [];
+        browseState[page].links = data.links || {};
+        renderBookingLinks(page, browseState[page].links);
+
+        if (filterBar) {
+          filterBar.classList.remove('hidden');
+          const stopsWrap = document.getElementById(page + '-stops-wrap');
+          if (stopsWrap) stopsWrap.classList.toggle('hidden', category !== 'flights');
+        }
+        renderBrowseCards(page);
+      }
+    } catch (err) {
+      grid.innerHTML = '<div class="browse-error">Network error: ' + escHtml(err.message) + '</div>';
+    }
+
+    btn.disabled = false;
+    btn.textContent = originalLabel;
+    return false;
+  }
+
+  // ── Currency converter (Prices tab) ──────────────────────────────────────
+  async function convertCurrency() {
+    const amount = parseFloat(document.getElementById('price-curr-amount').value) || 0;
+    const from = document.getElementById('price-curr-from').value;
+    const to = document.getElementById('price-curr-to').value;
+    const out = document.getElementById('price-curr-result');
+    out.textContent = 'Converting...';
+    try {
+      const res = await fetch('https://api.frankfurter.app/latest?from=' + encodeURIComponent(from) + '&to=' + encodeURIComponent(to));
+      const data = await res.json();
+      const rate = data.rates && data.rates[to];
+      if (!rate) { out.textContent = 'Could not fetch rate for ' + from + ' → ' + to + '.'; return; }
+      const converted = (amount * rate).toFixed(2);
+      out.innerHTML = amount + ' ' + from + ' = <span class="pt-rate">' + converted + ' ' + to + '</span> &middot; rate 1 ' + from + ' = ' + rate + ' ' + to;
+    } catch (err) {
+      out.textContent = 'Currency error: ' + err.message;
+    }
+  }
+
+  // ── For Me — personalised recommendations ────────────────────────────────
+  async function loadRecommendations() {
+    const key = getKey();
+    if (!key || !key.startsWith('gsk_')) { openSettings(); return; }
+
+    const btn = document.getElementById('forme-btn');
+    const grid = document.getElementById('forme-results');
+    btn.disabled = true;
+    btn.textContent = 'Thinking...';
+    grid.innerHTML = '<div class="browse-loading">Curating destinations for your family...</div>';
+
+    try {
+      const res = await fetch('/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ category: 'recommendations', params: {}, api_key: key, user_profile: profile })
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        grid.innerHTML = '<div class="browse-error">' + escHtml(data.error || 'Could not load recommendations.') + '</div>';
+      } else {
+        const items = data.items || [];
+        if (!items.length) {
+          grid.innerHTML = '<div class="browse-empty">No recommendations yet — try again.</div>';
+        } else {
+          const wrap = document.createElement('div');
+          wrap.className = 'result-grid';
+          items.forEach((it, i) => {
+            const seed = 100 + i;
+            const prompt = encodeURIComponent('beautiful travel destination ' + (it.destination || '') + ' family vacation photorealistic golden hour landscape');
+            const imgUrl = 'https://image.pollinations.ai/prompt/' + prompt + '?width=500&height=300&nologo=true&seed=' + seed;
+
+            const card = document.createElement('div');
+            card.className = 'reco-card';
+            card.innerHTML =
+              '<img src="' + imgUrl + '" alt="' + escAttr(it.destination || '') + '" loading="lazy" />' +
+              '<div class="reco-body">' +
+                '<div class="reco-dest">' + escHtml(it.destination || '') + '</div>' +
+                '<div class="reco-why">' + escHtml(it.why || '') + '</div>' +
+                '<div class="reco-meta">' +
+                  (it.best_time ? '<span>Best time: ' + escHtml(it.best_time) + '</span>' : '') +
+                  (it.est_budget_usd ? '<span>~$' + Math.round(it.est_budget_usd) + ' / week (whole family)</span>' : '') +
+                  (it.highlight ? '<span>' + escHtml(it.highlight) + '</span>' : '') +
+                '</div>' +
+              '</div>';
+
+            const planBtn = document.createElement('button');
+            planBtn.className = 'reco-plan';
+            planBtn.textContent = 'Plan this trip';
+            planBtn.addEventListener('click', () => planThisTrip(it.destination || ''));
+            card.querySelector('.reco-body').appendChild(planBtn);
+
+            wrap.appendChild(card);
+          });
+          grid.innerHTML = '';
+          grid.appendChild(wrap);
+        }
+      }
+    } catch (err) {
+      grid.innerHTML = '<div class="browse-error">Network error: ' + escHtml(err.message) + '</div>';
+    }
+
+    btn.disabled = false;
+    btn.textContent = 'Get personalised picks';
+  }
+
+  function planThisTrip(destination) {
+    switchTab('chat');
+    inputEl.value = 'Plan a family trip to ' + destination;
+    resize();
+    inputEl.focus();
+  }
+
   // ── Init ────────────────────────────────────────────────────────────────
   (function init() {
     initHeroSlideshow();
@@ -2037,6 +2832,50 @@ export default {
         });
       } catch (err) {
         console.error('Agent error:', err);
+        return new Response(
+          JSON.stringify({ error: err.message || 'Internal server error' }),
+          { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+      }
+    }
+
+    // POST /search → structured browsing data for Trips / Prices / For Me
+    if (method === 'POST' && url.pathname === '/search') {
+      let body;
+      try {
+        body = await request.json();
+      } catch (_) {
+        return new Response(JSON.stringify({ error: 'Invalid JSON body' }), {
+          status: 400,
+          headers: { ...CORS, 'Content-Type': 'application/json' }
+        });
+      }
+
+      const { category, params = {}, api_key, user_profile } = body;
+      const validCategories = ['flights', 'hotels', 'activities', 'recommendations'];
+
+      if (!api_key || !api_key.startsWith('gsk_')) {
+        return new Response(
+          JSON.stringify({ error: 'Invalid or missing Groq API key. Get a free key at console.groq.com and paste it in settings.' }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (!validCategories.includes(category)) {
+        return new Response(
+          JSON.stringify({ error: `Invalid category. Expected one of: ${validCategories.join(', ')}` }),
+          { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      try {
+        const result = await runSearch(category, params, api_key, user_profile || null);
+        return new Response(JSON.stringify(result), {
+          status: 200,
+          headers: { ...CORS, 'Content-Type': 'application/json' }
+        });
+      } catch (err) {
+        console.error('Search error:', err);
         return new Response(
           JSON.stringify({ error: err.message || 'Internal server error' }),
           { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }
