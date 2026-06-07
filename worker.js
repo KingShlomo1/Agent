@@ -358,7 +358,7 @@ Today's date: ${today}${profileContext}`;
 
   const messages = [
     { role: 'system', content: systemPrompt },
-    ...(history || []).slice(-8),
+    ...(history || []).slice(-4),
     { role: 'user', content: userMessage }
   ];
 
@@ -367,11 +367,19 @@ Today's date: ${today}${profileContext}`;
 
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+  // Tool results (especially web search) can be huge; trimming what we feed
+  // back to the model keeps the per-request token count under the free-tier
+  // TPM cap so multi-tool itineraries don't trip the rate limiter mid-run.
+  const trimForContext = (s, max = 900) => {
+    if (typeof s !== 'string') return s;
+    return s.length > max ? s.slice(0, max) + '\n[...truncated for length]' : s;
+  };
+
   const callGroq = async (msgs, useTools) => {
     const body = {
       model: 'llama-3.1-8b-instant',
       messages: msgs,
-      max_tokens: 2048
+      max_tokens: 1024
     };
     if (useTools) {
       body.tools = TOOLS_DEF;
@@ -481,7 +489,7 @@ Today's date: ${today}${profileContext}`;
       messages.push({
         role: 'tool',
         tool_call_id: tc.id,
-        content: typeof result === 'string' ? result : JSON.stringify(result)
+        content: trimForContext(typeof result === 'string' ? result : JSON.stringify(result))
       });
     }
   }
@@ -503,7 +511,7 @@ async function runSearch(category, params, apiKey, profile) {
         { role: 'system', content: 'You are a travel data assistant. Reply with ONLY valid JSON matching the requested shape — no markdown fences, no commentary.' },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 2048,
+      max_tokens: 1280,
       response_format: { type: 'json_object' }
     };
 
@@ -544,10 +552,11 @@ async function runSearch(category, params, apiKey, profile) {
       'Skyscanner': `https://www.skyscanner.com/transport/flights/${encodeURIComponent(String(origin).toLowerCase())}/${encodeURIComponent(String(destination).toLowerCase())}/${(departure_date || '').replace(/-/g, '')}`,
       'Kayak': `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departure_date}${return_date ? '/' + return_date : ''}/${passengers}adults`
     };
-    prompt = `Generate 6 realistic, varied example flight options from ${origin} to ${destination}, departing ${departure_date}${return_date ? ', returning ' + return_date : ''}, for ${passengers} passenger(s). ${familyNote}
-These are illustrative planning ESTIMATES (not live bookings) — vary airlines, prices, durations and stop counts realistically for this route.
+    prompt = `Generate 6 realistic, varied example flight options from ${origin} to ${destination}, departing ${departure_date}${return_date ? ', returning ' + return_date : ''}, for ${passengers} passenger(s).
+These are illustrative planning ESTIMATES (not live bookings) — vary airlines (use real airlines that plausibly fly this route), prices, durations, layover cities and stop counts realistically.
+Write each "notes" field like a real flight-search result would: cabin class, baggage allowance, on-time rating, legroom, loyalty program, red-eye/overnight, etc. Only mention kids/family perks where genuinely relevant (e.g. a long-haul red-eye) — most notes should be general, not family-themed.${familyNote ? ' Context on the traveller: ' + familyNote : ''}
 Reply with ONLY this JSON shape:
-{"items": [{"airline": "string", "price_usd": number, "duration": "e.g. 9h 25m", "stops": number, "departure_time": "e.g. 08:40", "arrival_time": "e.g. 17:05", "notes": "short family-relevant note"}]}`;
+{"items": [{"airline": "string", "price_usd": number, "duration": "e.g. 9h 25m", "stops": number, "departure_time": "e.g. 08:40", "arrival_time": "e.g. 17:05", "notes": "short, varied, realistic note"}]}`;
   } else if (category === 'hotels') {
     const { location, checkin, checkout, guests = 2, rooms = 1 } = params;
     links = {
@@ -555,15 +564,17 @@ Reply with ONLY this JSON shape:
       'Airbnb': `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`,
       'Hotels.com': `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`
     };
-    prompt = `Generate 6 realistic, varied example family-friendly hotel options in ${location} for check-in ${checkin}, check-out ${checkout}, ${guests} guests, ${rooms} room(s). ${familyNote}
-These are illustrative planning ESTIMATES (not live bookings) — vary names, star ratings, prices and amenities realistically for this destination.
+    prompt = `Generate 6 realistic, varied example hotel options in ${location} for check-in ${checkin}, check-out ${checkout}, ${guests} guests, ${rooms} room(s).
+These are illustrative planning ESTIMATES (not live bookings) — vary names, neighbourhoods, star ratings, prices and amenities realistically for this destination (mix of hotels, apart-hotels, resorts).
+Pick amenities from a broad realistic mix (pool, gym, spa, free breakfast, parking, kitchenette, kids club, business centre, pet-friendly, beach access, etc.) — not every hotel needs to be family-themed.${familyNote ? ' Context on the traveller: ' + familyNote : ''}
 Reply with ONLY this JSON shape:
-{"items": [{"name": "string", "stars": number (1-5), "price_per_night_usd": number, "rating": number (1.0-5.0), "amenities": ["pool","kids club"], "notes": "short family-relevant note"}]}`;
+{"items": [{"name": "string", "stars": number (1-5), "price_per_night_usd": number, "rating": number (1.0-5.0), "amenities": ["string", "string"], "notes": "short, varied, realistic note"}]}`;
   } else if (category === 'activities') {
     const { location, activity_type = 'family' } = params;
-    prompt = `Generate 8 realistic, varied ${activity_type} activities and attractions in ${location} that suit families with children. ${familyNote}
+    prompt = `Generate 8 realistic, varied ${activity_type} activities and attractions in ${location}.
+Mix well-known sights, museums, outdoor activities, tours, food experiences and local hidden gems — vary price, duration and audience (some great for kids, some more for adults, most for anyone). Don't force a "family" angle into every single one.${familyNote ? ' Context on the traveller: ' + familyNote : ''}
 Reply with ONLY this JSON shape:
-{"items": [{"name": "string", "category": "e.g. museum, park, beach, theme park, tour", "price_usd": number (per person; 0 if free), "duration": "e.g. 2-3 hours", "min_age": number, "rating": number (1.0-5.0), "notes": "short family-relevant note"}]}`;
+{"items": [{"name": "string", "category": "e.g. museum, park, beach, theme park, tour, food", "price_usd": number (per person; 0 if free), "duration": "e.g. 2-3 hours", "min_age": number (0 if no minimum), "rating": number (1.0-5.0), "notes": "short, varied, realistic note"}]}`;
   } else if (category === 'recommendations') {
     prompt = `Suggest 6 great family travel destinations tailored to this family. ${familyNote || 'No specific profile given — suggest broadly appealing family destinations.'}
 For each, give a one-line reason it suits this family, the best season/months to visit, and a rough total trip budget estimate in USD for the whole family for one week.
@@ -597,33 +608,33 @@ const HTML = `<!DOCTYPE html>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@400;500;600;700&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     .hidden { display: none !important; }
 
     :root {
-      --bg-dark:     #080c14;
-      --bg-panel:    #111827;
-      --bg-card:     #161d2e;
-      --border:      #1e2d45;
-      --border-light:#2a3a56;
-      --accent:      #3b82f6;
-      --accent-dim:  #1d4ed8;
-      --accent-glow: rgba(59,130,246,0.18);
-      --teal:        #0ea5e9;
-      --purple:      #8b5cf6;
-      --green:       #10b981;
-      --text-bright: #f0f6ff;
-      --text-main:   #c8d6ea;
-      --text-muted:  #64748b;
-      --text-dim:    #3d5068;
+      --bg-dark:     #2b2924;
+      --bg-panel:    #34322b;
+      --bg-card:     #3d3a32;
+      --border:      #4d473c;
+      --border-light:#5c5547;
+      --accent:      #c97b5f;
+      --accent-dim:  #a8847a;
+      --accent-glow: rgba(201,123,95,0.20);
+      --teal:        #97a87f;
+      --purple:      #9b89a6;
+      --green:       #7d8c5c;
+      --text-bright: #f7f1e6;
+      --text-main:   #ddd2c4;
+      --text-muted:  #a89c8d;
+      --text-dim:    #756c60;
     }
 
     html, body { height: 100%; }
 
     body {
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
       background: var(--bg-dark);
       color: var(--text-main);
       min-height: 100vh;
@@ -643,7 +654,7 @@ const HTML = `<!DOCTYPE html>
       justify-content: flex-end;
       position: relative;
       overflow: hidden;
-      background: #0d1117;
+      background: #262420;
     }
 
     /* Full-bleed rotating photo slideshow */
@@ -679,7 +690,7 @@ const HTML = `<!DOCTYPE html>
       position: absolute;
       inset: 0;
       z-index: 1;
-      background: linear-gradient(to top, rgba(10,14,20,0.85) 0%, rgba(10,14,20,0.45) 50%, rgba(10,14,20,0.15) 100%);
+      background: linear-gradient(to top, rgba(38,36,32,0.88) 0%, rgba(38,36,32,0.48) 50%, rgba(38,36,32,0.15) 100%);
       pointer-events: none;
     }
 
@@ -699,7 +710,7 @@ const HTML = `<!DOCTYPE html>
 
     .hero-eyebrow {
       display: inline-block;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-size: 0.72rem;
       font-weight: 600;
       letter-spacing: 3px;
@@ -712,7 +723,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .hero-headline {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-weight: 600;
       font-size: clamp(2.1rem, 5.4vw, 3.6rem);
       line-height: 1.12;
@@ -723,7 +734,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .hero-subtitle {
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-weight: 400;
       font-size: 1.02rem;
       line-height: 1.6;
@@ -772,7 +783,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .login-brand h1 {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-size: 1.5rem;
       font-weight: 600;
       letter-spacing: 0.3px;
@@ -780,7 +791,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .login-brand p {
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       color: rgba(245, 243, 239, 0.6);
       font-size: 0.82rem;
       margin-top: 4px;
@@ -793,7 +804,7 @@ const HTML = `<!DOCTYPE html>
       padding: 13px 20px;
       border-radius: 10px;
       font-size: 0.88rem;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-weight: 600;
       cursor: pointer;
       display: flex;
@@ -809,12 +820,12 @@ const HTML = `<!DOCTYPE html>
     .auth-btn:active { transform: translateY(0); }
 
     .btn-google { background: #faf9f7; color: #1f2937; border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
-    .btn-apple  { background: #14181f; color: #faf9f7; border: 1px solid rgba(245,243,239,0.14); }
+    .btn-apple  { background: #332f29; color: #faf9f7; border: 1px solid rgba(245,243,239,0.14); }
 
     .auth-sep {
       text-align: center;
       color: rgba(245, 243, 239, 0.4);
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-size: 0.78rem;
       margin: 14px 0;
       position: relative;
@@ -834,7 +845,7 @@ const HTML = `<!DOCTYPE html>
     .guest-link {
       display: block;
       text-align: center;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       color: rgba(245, 243, 239, 0.55);
       font-size: 0.8rem;
       cursor: pointer;
@@ -853,7 +864,7 @@ const HTML = `<!DOCTYPE html>
       align-items: center;
       justify-content: flex-start;
       padding: 40px 16px 60px;
-      background: linear-gradient(180deg, #14181f 0%, #0d1117 100%);
+      background: linear-gradient(180deg, #332f29 0%, #262420 100%);
       overflow-y: auto;
     }
 
@@ -912,7 +923,7 @@ const HTML = `<!DOCTYPE html>
       transition: border-color 0.15s, background 0.15s;
       font-family: inherit;
     }
-    .field-input:focus { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+    .field-input:focus { border-color: var(--accent); background: rgba(201,123,95,0.06); }
     .field-input::placeholder { color: var(--text-dim); }
 
     /* Stepper */
@@ -975,7 +986,7 @@ const HTML = `<!DOCTYPE html>
     }
     .chip:hover { border-color: var(--border-light); color: var(--text-main); }
     .chip.selected {
-      background: rgba(59,130,246,0.18);
+      background: rgba(201,123,95,0.18);
       border-color: var(--accent);
       color: #93c5fd;
     }
@@ -997,7 +1008,7 @@ const HTML = `<!DOCTYPE html>
       transition: all 0.15s;
     }
     .style-card:hover { border-color: var(--border-light); background: rgba(255,255,255,0.07); }
-    .style-card.selected { border-color: var(--accent); background: rgba(59,130,246,0.14); }
+    .style-card.selected { border-color: var(--accent); background: rgba(201,123,95,0.14); }
 
     .style-card .sc-icon {
       width: 36px;
@@ -1060,7 +1071,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .app-brand {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-size: 1.05rem;
       font-weight: 600;
       letter-spacing: 0.2px;
@@ -1133,14 +1144,14 @@ const HTML = `<!DOCTYPE html>
       color: var(--text-muted);
       font-size: 0.85rem;
       font-weight: 500;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 7px 15px;
       border-radius: 8px;
       cursor: pointer;
       transition: background 0.15s, color 0.15s;
     }
     .nav-tab:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
-    .nav-tab.active { background: rgba(59,130,246,0.14); color: var(--text-bright); }
+    .nav-tab.active { background: rgba(201,123,95,0.14); color: var(--text-bright); }
 
     .tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
     .tab-panel.active { display: flex; }
@@ -1157,7 +1168,7 @@ const HTML = `<!DOCTYPE html>
     .browse-inner { width: 100%; max-width: 980px; }
 
     .browse-heading h2 {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-size: 1.5rem;
       font-weight: 600;
       color: var(--text-bright);
@@ -1178,7 +1189,7 @@ const HTML = `<!DOCTYPE html>
       transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
     .subnav-btn:hover { color: var(--text-main); }
-    .subnav-btn.active { background: rgba(59,130,246,0.14); border-color: var(--accent-dim); color: var(--text-bright); }
+    .subnav-btn.active { background: rgba(201,123,95,0.14); border-color: var(--accent-dim); color: var(--text-bright); }
 
     .search-form {
       display: flex;
@@ -1197,7 +1208,7 @@ const HTML = `<!DOCTYPE html>
       border-radius: 8px;
       color: var(--text-bright);
       font-size: 0.84rem;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 9px 12px;
       flex: 1 1 160px;
       min-width: 0;
@@ -1212,7 +1223,7 @@ const HTML = `<!DOCTYPE html>
       border-radius: 8px;
       font-size: 0.84rem;
       font-weight: 600;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 9px 22px;
       cursor: pointer;
       transition: background 0.15s;
@@ -1242,10 +1253,16 @@ const HTML = `<!DOCTYPE html>
       color: var(--text-bright);
       font-size: 0.78rem;
       padding: 5px 9px;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
     }
     .filter-bar input[type="range"] { accent-color: var(--accent); }
 
+    .estimate-note {
+      font-size: 0.76rem;
+      color: var(--text-dim);
+      margin: -8px 0 12px;
+      font-style: italic;
+    }
     .booking-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
     .booking-links a {
       font-size: 0.78rem;
@@ -1256,7 +1273,7 @@ const HTML = `<!DOCTYPE html>
       padding: 6px 14px;
       transition: border-color 0.15s, background 0.15s;
     }
-    .booking-links a:hover { border-color: var(--accent-dim); background: rgba(59,130,246,0.08); }
+    .booking-links a:hover { border-color: var(--accent-dim); background: rgba(201,123,95,0.08); }
 
     .result-grid {
       display: grid;
@@ -1304,7 +1321,7 @@ const HTML = `<!DOCTYPE html>
     }
     .reco-card img { width: 100%; height: 150px; object-fit: cover; display: block; }
     .reco-card .reco-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 7px; }
-    .reco-card .reco-dest { font-family: 'Playfair Display', Georgia, serif; font-size: 1.08rem; font-weight: 600; color: var(--text-bright); }
+    .reco-card .reco-dest { font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif; font-size: 1.08rem; font-weight: 600; color: var(--text-bright); }
     .reco-card .reco-why { font-size: 0.82rem; color: var(--text-main); line-height: 1.45; }
     .reco-card .reco-meta { font-size: 0.76rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
     .reco-card .reco-plan {
@@ -1315,13 +1332,13 @@ const HTML = `<!DOCTYPE html>
       color: var(--accent);
       font-size: 0.78rem;
       font-weight: 600;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       border-radius: 18px;
       padding: 6px 16px;
       cursor: pointer;
       transition: background 0.15s;
     }
-    .reco-card .reco-plan:hover { background: rgba(59,130,246,0.1); }
+    .reco-card .reco-plan:hover { background: rgba(201,123,95,0.1); }
 
     .price-tools {
       display: flex;
@@ -1344,7 +1361,7 @@ const HTML = `<!DOCTYPE html>
       border-radius: 7px;
       color: var(--text-bright);
       font-size: 0.8rem;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 8px 10px;
       flex: 1;
       min-width: 0;
@@ -1356,7 +1373,7 @@ const HTML = `<!DOCTYPE html>
       border-radius: 7px;
       font-size: 0.8rem;
       font-weight: 600;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 8px 16px;
       cursor: pointer;
     }
@@ -1429,8 +1446,8 @@ const HTML = `<!DOCTYPE html>
     }
 
     .profile-chip {
-      background: rgba(59,130,246,0.12);
-      border: 1px solid rgba(59,130,246,0.25);
+      background: rgba(201,123,95,0.12);
+      border: 1px solid rgba(201,123,95,0.25);
       color: #93c5fd;
       border-radius: 20px;
       padding: 4px 12px;
@@ -1467,7 +1484,7 @@ const HTML = `<!DOCTYPE html>
     }
 
     .msg.user .msg-avatar { background: linear-gradient(135deg, var(--accent), var(--accent-dim)); color: #fff; }
-    .msg.bot  .msg-avatar { background: linear-gradient(135deg, #0f766e, #0891b2); color: #fff; }
+    .msg.bot  .msg-avatar { background: linear-gradient(135deg, #97a87f, #7d8c5c); color: #fff; }
 
     .bubble {
       max-width: 82%;
@@ -1500,7 +1517,7 @@ const HTML = `<!DOCTYPE html>
     .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
     .bubble li { margin: 3px 0; }
     .bubble strong { color: #93c5fd; }
-    .bubble a  { color: #60a5fa; text-decoration: none; }
+    .bubble a  { color: #c97b5f; text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
     .bubble code { background: var(--bg-dark); padding: 2px 5px; border-radius: 3px; font-size: 0.85em; }
     .bubble hr { border-color: var(--border); margin: 10px 0; }
@@ -1594,7 +1611,7 @@ const HTML = `<!DOCTYPE html>
       cursor: pointer;
       transition: border-color 0.15s, color 0.15s, background 0.15s;
     }
-    .suggestion:hover { border-color: var(--accent); color: var(--text-main); background: rgba(59,130,246,0.08); }
+    .suggestion:hover { border-color: var(--accent); color: var(--text-main); background: rgba(201,123,95,0.08); }
 
     .input-row {
       display: flex;
@@ -1664,7 +1681,7 @@ const HTML = `<!DOCTYPE html>
 
     .modal h2 { font-size: 1rem; font-weight: 700; color: var(--text-bright); margin-bottom: 6px; }
     .modal p  { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.55; }
-    .modal a  { color: #60a5fa; }
+    .modal a  { color: #c97b5f; }
 
     .modal-input {
       width: 100%;
@@ -1837,7 +1854,7 @@ const HTML = `<!DOCTYPE html>
       <div class="style-cards" id="style-cards">
         <div class="style-card selected" data-val="Relaxed Family" onclick="selectStyle(this)">
           <div class="sc-icon" style="background:rgba(16,185,129,0.18)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#7d8c5c" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
           </div>
           <div class="sc-label">Relaxed Family</div>
           <div class="sc-desc">Easygoing pace, comfort first</div>
@@ -1851,14 +1868,14 @@ const HTML = `<!DOCTYPE html>
         </div>
         <div class="style-card" data-val="Cultural" onclick="selectStyle(this)">
           <div class="sc-icon" style="background:rgba(139,92,246,0.18)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="22" x2="12" y2="12"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9b89a6" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="22" x2="12" y2="12"/></svg>
           </div>
           <div class="sc-label">Cultural</div>
           <div class="sc-desc">Museums, history, arts</div>
         </div>
         <div class="style-card" data-val="Beach and Nature" onclick="selectStyle(this)">
           <div class="sc-icon" style="background:rgba(14,165,233,0.18)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#97a87f" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           </div>
           <div class="sc-label">Beach and Nature</div>
           <div class="sc-desc">Sun, sea, national parks</div>
@@ -1991,6 +2008,7 @@ const HTML = `<!DOCTYPE html>
           </label>
         </div>
 
+        <p class="estimate-note">Prices shown are AI-generated planning estimates, not live fares — open a booking link below for real-time prices.</p>
         <div class="booking-links" id="trips-links"></div>
         <div id="trips-results"></div>
       </div>
@@ -2063,6 +2081,7 @@ const HTML = `<!DOCTYPE html>
           </label>
         </div>
 
+        <p class="estimate-note">Prices shown are AI-generated planning estimates, not live fares — open a booking link below for real-time prices.</p>
         <div class="booking-links" id="prices-links"></div>
         <div id="prices-results"></div>
       </div>
@@ -2409,7 +2428,7 @@ const HTML = `<!DOCTYPE html>
     const wrap = document.createElement('div');
     wrap.className = 'typing-wrap';
     wrap.id = 'typing';
-    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI<\/div>' +
+    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#97a87f,#7d8c5c);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI<\/div>' +
       '<div class="typing-bubble"><div class="dots"><span><\/span><span><\/span><span><\/span><\/div>Searching and planning your trip...<\/div>';
     messagesEl.appendChild(wrap);
     scroll();

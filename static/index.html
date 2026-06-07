@@ -7,33 +7,33 @@
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@400;500;600;700&family=Cormorant+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Montserrat:wght@400;500;600;700&display=swap" rel="stylesheet">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     .hidden { display: none !important; }
 
     :root {
-      --bg-dark:     #080c14;
-      --bg-panel:    #111827;
-      --bg-card:     #161d2e;
-      --border:      #1e2d45;
-      --border-light:#2a3a56;
-      --accent:      #3b82f6;
-      --accent-dim:  #1d4ed8;
-      --accent-glow: rgba(59,130,246,0.18);
-      --teal:        #0ea5e9;
-      --purple:      #8b5cf6;
-      --green:       #10b981;
-      --text-bright: #f0f6ff;
-      --text-main:   #c8d6ea;
-      --text-muted:  #64748b;
-      --text-dim:    #3d5068;
+      --bg-dark:     #2b2924;
+      --bg-panel:    #34322b;
+      --bg-card:     #3d3a32;
+      --border:      #4d473c;
+      --border-light:#5c5547;
+      --accent:      #c97b5f;
+      --accent-dim:  #a8847a;
+      --accent-glow: rgba(201,123,95,0.20);
+      --teal:        #97a87f;
+      --purple:      #9b89a6;
+      --green:       #7d8c5c;
+      --text-bright: #f7f1e6;
+      --text-main:   #ddd2c4;
+      --text-muted:  #a89c8d;
+      --text-dim:    #756c60;
     }
 
     html, body { height: 100%; }
 
     body {
-      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      font-family: 'Montserrat', system-ui, -apple-system, sans-serif;
       background: var(--bg-dark);
       color: var(--text-main);
       min-height: 100vh;
@@ -52,7 +52,7 @@
       justify-content: flex-end;
       position: relative;
       overflow: hidden;
-      background: #0d1117;
+      background: #262420;
     }
 
     /* Full-bleed rotating photo slideshow */
@@ -88,7 +88,7 @@
       position: absolute;
       inset: 0;
       z-index: 1;
-      background: linear-gradient(to top, rgba(10,14,20,0.85) 0%, rgba(10,14,20,0.45) 50%, rgba(10,14,20,0.15) 100%);
+      background: linear-gradient(to top, rgba(38,36,32,0.88) 0%, rgba(38,36,32,0.48) 50%, rgba(38,36,32,0.15) 100%);
       pointer-events: none;
     }
 
@@ -108,7 +108,7 @@
 
     .hero-eyebrow {
       display: inline-block;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-size: 0.72rem;
       font-weight: 600;
       letter-spacing: 3px;
@@ -121,7 +121,7 @@
     }
 
     .hero-headline {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-weight: 600;
       font-size: clamp(2.1rem, 5.4vw, 3.6rem);
       line-height: 1.12;
@@ -132,7 +132,7 @@
     }
 
     .hero-subtitle {
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-weight: 400;
       font-size: 1.02rem;
       line-height: 1.6;
@@ -181,7 +181,7 @@
     }
 
     .login-brand h1 {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-size: 1.5rem;
       font-weight: 600;
       letter-spacing: 0.3px;
@@ -189,7 +189,7 @@
     }
 
     .login-brand p {
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       color: rgba(245, 243, 239, 0.6);
       font-size: 0.82rem;
       margin-top: 4px;
@@ -202,7 +202,7 @@
       padding: 13px 20px;
       border-radius: 10px;
       font-size: 0.88rem;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-weight: 600;
       cursor: pointer;
       display: flex;
@@ -218,12 +218,12 @@
     .auth-btn:active { transform: translateY(0); }
 
     .btn-google { background: #faf9f7; color: #1f2937; border: 1px solid rgba(0,0,0,0.08); box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
-    .btn-apple  { background: #14181f; color: #faf9f7; border: 1px solid rgba(245,243,239,0.14); }
+    .btn-apple  { background: #332f29; color: #faf9f7; border: 1px solid rgba(245,243,239,0.14); }
 
     .auth-sep {
       text-align: center;
       color: rgba(245, 243, 239, 0.4);
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       font-size: 0.78rem;
       margin: 14px 0;
       position: relative;
@@ -243,7 +243,7 @@
     .guest-link {
       display: block;
       text-align: center;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       color: rgba(245, 243, 239, 0.55);
       font-size: 0.8rem;
       cursor: pointer;
@@ -262,7 +262,7 @@
       align-items: center;
       justify-content: flex-start;
       padding: 40px 16px 60px;
-      background: linear-gradient(180deg, #14181f 0%, #0d1117 100%);
+      background: linear-gradient(180deg, #332f29 0%, #262420 100%);
       overflow-y: auto;
     }
 
@@ -302,7 +302,7 @@
       transition: border-color 0.15s, background 0.15s;
       font-family: inherit;
     }
-    .field-input:focus { border-color: var(--accent); background: rgba(59,130,246,0.06); }
+    .field-input:focus { border-color: var(--accent); background: rgba(201,123,95,0.06); }
     .field-input::placeholder { color: var(--text-dim); }
 
     .stepper {
@@ -353,7 +353,7 @@
       user-select: none;
     }
     .chip:hover { border-color: var(--border-light); color: var(--text-main); }
-    .chip.selected { background: rgba(59,130,246,0.18); border-color: var(--accent); color: #93c5fd; }
+    .chip.selected { background: rgba(201,123,95,0.18); border-color: var(--accent); color: #93c5fd; }
 
     .style-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
     .style-card {
@@ -366,7 +366,7 @@
       transition: all 0.15s;
     }
     .style-card:hover { border-color: var(--border-light); background: rgba(255,255,255,0.07); }
-    .style-card.selected { border-color: var(--accent); background: rgba(59,130,246,0.14); }
+    .style-card.selected { border-color: var(--accent); background: rgba(201,123,95,0.14); }
     .sc-icon {
       width: 36px;
       height: 36px;
@@ -411,7 +411,7 @@
       flex-shrink: 0;
     }
     .app-brand {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-size: 1.05rem;
       font-weight: 600;
       letter-spacing: 0.2px;
@@ -479,14 +479,14 @@
       color: var(--text-muted);
       font-size: 0.85rem;
       font-weight: 500;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 7px 15px;
       border-radius: 8px;
       cursor: pointer;
       transition: background 0.15s, color 0.15s;
     }
     .nav-tab:hover { background: rgba(255,255,255,0.05); color: var(--text-main); }
-    .nav-tab.active { background: rgba(59,130,246,0.14); color: var(--text-bright); }
+    .nav-tab.active { background: rgba(201,123,95,0.14); color: var(--text-bright); }
 
     .tab-panel { display: none; flex: 1; min-height: 0; flex-direction: column; overflow: hidden; }
     .tab-panel.active { display: flex; }
@@ -503,7 +503,7 @@
     .browse-inner { width: 100%; max-width: 980px; }
 
     .browse-heading h2 {
-      font-family: 'Playfair Display', Georgia, serif;
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
       font-size: 1.5rem;
       font-weight: 600;
       color: var(--text-bright);
@@ -524,7 +524,7 @@
       transition: background 0.15s, color 0.15s, border-color 0.15s;
     }
     .subnav-btn:hover { color: var(--text-main); }
-    .subnav-btn.active { background: rgba(59,130,246,0.14); border-color: var(--accent-dim); color: var(--text-bright); }
+    .subnav-btn.active { background: rgba(201,123,95,0.14); border-color: var(--accent-dim); color: var(--text-bright); }
 
     .search-form {
       display: flex;
@@ -543,7 +543,7 @@
       border-radius: 8px;
       color: var(--text-bright);
       font-size: 0.84rem;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 9px 12px;
       flex: 1 1 160px;
       min-width: 0;
@@ -558,7 +558,7 @@
       border-radius: 8px;
       font-size: 0.84rem;
       font-weight: 600;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 9px 22px;
       cursor: pointer;
       transition: background 0.15s;
@@ -588,10 +588,16 @@
       color: var(--text-bright);
       font-size: 0.78rem;
       padding: 5px 9px;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
     }
     .filter-bar input[type="range"] { accent-color: var(--accent); }
 
+    .estimate-note {
+      font-size: 0.76rem;
+      color: var(--text-dim);
+      margin: -8px 0 12px;
+      font-style: italic;
+    }
     .booking-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
     .booking-links a {
       font-size: 0.78rem;
@@ -602,7 +608,7 @@
       padding: 6px 14px;
       transition: border-color 0.15s, background 0.15s;
     }
-    .booking-links a:hover { border-color: var(--accent-dim); background: rgba(59,130,246,0.08); }
+    .booking-links a:hover { border-color: var(--accent-dim); background: rgba(201,123,95,0.08); }
 
     .result-grid {
       display: grid;
@@ -650,7 +656,7 @@
     }
     .reco-card img { width: 100%; height: 150px; object-fit: cover; display: block; }
     .reco-card .reco-body { padding: 16px 18px; display: flex; flex-direction: column; gap: 7px; }
-    .reco-card .reco-dest { font-family: 'Playfair Display', Georgia, serif; font-size: 1.08rem; font-weight: 600; color: var(--text-bright); }
+    .reco-card .reco-dest { font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif; font-size: 1.08rem; font-weight: 600; color: var(--text-bright); }
     .reco-card .reco-why { font-size: 0.82rem; color: var(--text-main); line-height: 1.45; }
     .reco-card .reco-meta { font-size: 0.76rem; color: var(--text-muted); display: flex; flex-wrap: wrap; gap: 6px 14px; }
     .reco-card .reco-plan {
@@ -661,13 +667,13 @@
       color: var(--accent);
       font-size: 0.78rem;
       font-weight: 600;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       border-radius: 18px;
       padding: 6px 16px;
       cursor: pointer;
       transition: background 0.15s;
     }
-    .reco-card .reco-plan:hover { background: rgba(59,130,246,0.1); }
+    .reco-card .reco-plan:hover { background: rgba(201,123,95,0.1); }
 
     .price-tools {
       display: flex;
@@ -690,7 +696,7 @@
       border-radius: 7px;
       color: var(--text-bright);
       font-size: 0.8rem;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 8px 10px;
       flex: 1;
       min-width: 0;
@@ -702,7 +708,7 @@
       border-radius: 7px;
       font-size: 0.8rem;
       font-weight: 600;
-      font-family: 'Inter', system-ui, sans-serif;
+      font-family: 'Montserrat', system-ui, sans-serif;
       padding: 8px 16px;
       cursor: pointer;
     }
@@ -752,8 +758,8 @@
 
     .profile-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; margin-top: 14px; }
     .profile-chip {
-      background: rgba(59,130,246,0.12);
-      border: 1px solid rgba(59,130,246,0.25);
+      background: rgba(201,123,95,0.12);
+      border: 1px solid rgba(201,123,95,0.25);
       color: #93c5fd;
       border-radius: 20px;
       padding: 4px 12px;
@@ -781,7 +787,7 @@
       margin-top: 2px;
     }
     .msg.user .msg-avatar { background: linear-gradient(135deg, var(--accent), var(--accent-dim)); color: #fff; }
-    .msg.bot  .msg-avatar { background: linear-gradient(135deg, #0f766e, #0891b2); color: #fff; }
+    .msg.bot  .msg-avatar { background: linear-gradient(135deg, #97a87f, #7d8c5c); color: #fff; }
     .bubble {
       max-width: 82%;
       padding: 12px 16px;
@@ -798,7 +804,7 @@
     .bubble ul, .bubble ol { padding-left: 20px; margin: 6px 0; }
     .bubble li { margin: 3px 0; }
     .bubble strong { color: #93c5fd; }
-    .bubble a  { color: #60a5fa; text-decoration: none; }
+    .bubble a  { color: #c97b5f; text-decoration: none; }
     .bubble a:hover { text-decoration: underline; }
     .bubble code { background: var(--bg-dark); padding: 2px 5px; border-radius: 3px; font-size: 0.85em; }
     .bubble hr { border-color: var(--border); margin: 10px 0; }
@@ -870,7 +876,7 @@
       cursor: pointer;
       transition: border-color 0.15s, color 0.15s, background 0.15s;
     }
-    .suggestion:hover { border-color: var(--accent); color: var(--text-main); background: rgba(59,130,246,0.08); }
+    .suggestion:hover { border-color: var(--accent); color: var(--text-main); background: rgba(201,123,95,0.08); }
 
     .input-row {
       display: flex;
@@ -936,7 +942,7 @@
     }
     .modal h2 { font-size: 1rem; font-weight: 700; color: var(--text-bright); margin-bottom: 6px; }
     .modal p  { font-size: 0.82rem; color: var(--text-muted); margin-bottom: 16px; line-height: 1.55; }
-    .modal a  { color: #60a5fa; }
+    .modal a  { color: #c97b5f; }
     .modal-input {
       width: 100%;
       background: var(--bg-dark);
@@ -1088,7 +1094,7 @@
       <div class="style-cards" id="style-cards">
         <div class="style-card selected" data-val="Relaxed Family" onclick="selectStyle(this)">
           <div class="sc-icon" style="background:rgba(16,185,129,0.18)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#7d8c5c" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
           </div>
           <div class="sc-label">Relaxed Family</div>
           <div class="sc-desc">Easygoing pace, comfort first</div>
@@ -1102,14 +1108,14 @@
         </div>
         <div class="style-card" data-val="Cultural" onclick="selectStyle(this)">
           <div class="sc-icon" style="background:rgba(139,92,246,0.18)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8b5cf6" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="22" x2="12" y2="12"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9b89a6" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><line x1="12" y1="22" x2="12" y2="12"/></svg>
           </div>
           <div class="sc-label">Cultural</div>
           <div class="sc-desc">Museums, history, arts</div>
         </div>
         <div class="style-card" data-val="Beach and Nature" onclick="selectStyle(this)">
           <div class="sc-icon" style="background:rgba(14,165,233,0.18)">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#0ea5e9" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#97a87f" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
           </div>
           <div class="sc-label">Beach and Nature</div>
           <div class="sc-desc">Sun, sea, national parks</div>
@@ -1242,6 +1248,7 @@
           </label>
         </div>
 
+        <p class="estimate-note">Prices shown are AI-generated planning estimates, not live fares — open a booking link below for real-time prices.</p>
         <div class="booking-links" id="trips-links"></div>
         <div id="trips-results"></div>
       </div>
@@ -1314,6 +1321,7 @@
           </label>
         </div>
 
+        <p class="estimate-note">Prices shown are AI-generated planning estimates, not live fares — open a booking link below for real-time prices.</p>
         <div class="booking-links" id="prices-links"></div>
         <div id="prices-results"></div>
       </div>
@@ -1639,7 +1647,7 @@
     const wrap = document.createElement('div');
     wrap.className = 'typing-wrap';
     wrap.id = 'typing';
-    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#0f766e,#0891b2);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI</div>' +
+    wrap.innerHTML = '<div class="msg-avatar" style="background:linear-gradient(135deg,#97a87f,#7d8c5c);color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.7rem;font-weight:700;flex-shrink:0;align-self:flex-start;margin-top:2px">AI</div>' +
       '<div class="typing-bubble"><div class="dots"><span></span><span></span><span></span></div>Searching and planning your trip...</div>';
     messagesEl.appendChild(wrap);
     scroll();
