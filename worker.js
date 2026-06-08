@@ -1384,7 +1384,9 @@ const HTML = `<!DOCTYPE html>
     ═══════════════════════════════════════════ */
     #page-app {
       flex-direction: column;
-      min-height: 100vh;
+      height: 100vh;
+      height: 100dvh;
+      overflow: hidden;
       background: var(--bg-dark);
     }
 
@@ -3445,8 +3447,12 @@ const HTML = `<!DOCTYPE html>
     const urls = [];
     try {
       const u = new URL(srcUrl, location.href);
-      const m = decodeURIComponent(u.pathname).match(/\/prompt\/(.+)/);
-      const basePrompt = m ? m[1] : ('beautiful travel destination ' + (destination || 'family vacation') + ' photorealistic golden hour landscape');
+      const decodedPath = decodeURIComponent(u.pathname);
+      const marker = '/prompt/';
+      const idx = decodedPath.indexOf(marker);
+      const basePrompt = idx >= 0
+        ? decodedPath.slice(idx + marker.length)
+        : ('beautiful travel destination ' + (destination || 'family vacation') + ' photorealistic golden hour landscape');
       const enc = encodeURIComponent(basePrompt);
       urls.push('https://image.pollinations.ai/prompt/' + enc + '?width=900&height=450&nologo=true&seed=' + Math.floor(Math.random() * 10000));
       urls.push('https://image.pollinations.ai/prompt/' + enc + '?width=900&height=450&nologo=true&model=flux&seed=' + Math.floor(Math.random() * 10000));
