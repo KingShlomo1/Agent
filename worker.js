@@ -390,6 +390,362 @@ function toolStatusText(fnName, args) {
   }
 }
 
+// ─── Trip-planning "crew" pipeline ───────────────────────────────────────────
+// Inspired by a multi-agent CrewAI setup the user built (flight / hotel /
+// activities specialists feeding a coordinator). We adapt that *shape* onto
+// our existing free Groq + Cloudflare Worker stack: run a few specialist
+// passes in parallel (each scoped to its own tools), then have a coordinator
+// pass synthesise their findings into one finished itinerary.
+
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms));
+
+const trimToolResult = (s, max = 900) => {
+  if (typeof s !== 'string') return s;
+  return s.length > max ? s.slice(0, max) + '\n[...truncated for length]' : s;
+};
+
+async function groqChat(apiKey, msgs, toolsForCall) {
+  const body = {
+    model: 'llama-3.1-8b-instant',
+    messages: msgs,
+    max_tokens: 1024
+  };
+  if (toolsForCall && toolsForCall.length) {
+    body.tools = toolsForCall;
+    body.tool_choice = 'auto';
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify(body)
+    });
+
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) { data = null; }
+
+    if (resp.ok) return data;
+
+    const code = data && data.error && data.error.code;
+    if (resp.status === 429 && attempt < 2) {
+      const match = /try again in ([\d.]+)s/i.exec(text);
+      const waitMs = match ? Math.min(parseFloat(match[1]) * 1000 + 500, 20000) : 5000;
+      await sleepMs(waitMs);
+      continue;
+    }
+
+    const err = new Error(`Groq API error ${resp.status}: ${text}`);
+    err.code = code;
+    err.status = resp.status;
+    throw err;
+  }
+}
+
+async function streamChunksTo(emit, text) {
+  if (!emit || !text) return;
+  const pieces = text.match(/\S+\s*|\s+/g) || [text];
+  let buf = '';
+  for (const piece of pieces) {
+    buf += piece;
+    if (buf.length >= 3) {
+      await emit({ type: 'chunk', text: buf });
+      buf = '';
+      await sleepMs(16);
+    }
+  }
+  if (buf) await emit({ type: 'chunk', text: buf });
+}
+
+// Heuristic: does this message look like a "plan my trip" request (worth the
+// extra cost of running the full specialist crew) rather than a quick
+// follow-up question ("what's the weather there", "how much is a taxi")?
+function looksLikeTripPlanningRequest(message) {
+  const m = (message || '').toLowerCase();
+  const hasTripWord = /\b(plan|planning|itinerary|trip|vacation|holiday|getaway|travel(l)?ing|visit(ing)?)\b/.test(m);
+  const hasDestinationHint = /\b(to|in|for|around|across)\b/.test(m);
+  return hasTripWord && hasDestinationHint;
+}
+
+// Each specialist gets its own focused brief, its own slice of the tool
+// catalogue, and a short, bounded tool-calling loop — mirroring the
+// async_execution specialist tasks from the CrewAI setup, but run as
+// Promise.allSettled() passes against Groq instead of separate agents.
+const SPECIALISTS = [
+  {
+    key: 'flights',
+    label: 'Flight Research Specialist',
+    statusVerb: 'Researching flight options',
+    toolNames: ['search_flights', 'currency_info', 'get_travel_tips'],
+    systemPrompt: (today) => `You are a Flight Research Specialist on a family travel planning team.
+Your job: find practical flight options for the requested trip — airlines, rough price ranges, flight durations,
+direct vs connecting routes, and booking tips, with a focus on what works well for families travelling with children
+(daytime departures, shorter layovers, baggage allowances). Use your tools to look up real flights and currency
+context where relevant. Today's date: ${today}.
+Reply with a concise, well-organised brief (not a full itinerary) — just your findings on flights for the coordinator
+to build on. Always end with a short written summary in your own words.`
+  },
+  {
+    key: 'hotels',
+    label: 'Hotel & Accommodation Specialist',
+    statusVerb: 'Finding family-friendly places to stay',
+    toolNames: ['search_hotels', 'currency_info'],
+    systemPrompt: (today) => `You are a Hotel & Accommodation Research Specialist on a family travel planning team.
+Your job: find family-friendly places to stay — hotels, apartments, or resorts — with rough nightly prices, locations
+relative to key sights, and amenities that matter for families (pools, kitchenettes, connecting rooms, kids' clubs,
+breakfast included). Use your tools to look up real options and currency context where relevant. Today's date: ${today}.
+Reply with a concise, well-organised brief (not a full itinerary) — just your findings on accommodation for the
+coordinator to build on. Always end with a short written summary in your own words.`
+  },
+  {
+    key: 'activities',
+    label: 'Activities & Attractions Specialist',
+    statusVerb: 'Scouting things to do for the whole family',
+    toolNames: ['find_activities', 'find_restaurants', 'get_weather', 'find_local_transport'],
+    systemPrompt: (today) => `You are an Activities & Attractions Specialist on a family travel planning team.
+Your job: find things to do that suit both kids and adults — sights, tours, outdoor activities, and rainy-day backups —
+plus family-friendly restaurants (flagging any dietary requirements such as kosher, halal, or allergies), the likely
+weather for the trip, and local transport options. Use your tools to look up real, current information.
+Today's date: ${today}.
+Reply with a concise, well-organised brief (not a full itinerary) — just your findings for the coordinator to build on.
+Always end with a short written summary in your own words.`
+  }
+];
+
+// Run one specialist through a short, tool-scoped Groq loop and return its brief.
+async function runSpecialist(spec, briefPrompt, apiKey, today, toolsUsed, emit) {
+  const toolsForSpec = TOOLS_DEF.filter(t => spec.toolNames.includes(t.function && t.function.name));
+  const messages = [
+    { role: 'system', content: spec.systemPrompt(today) },
+    { role: 'user', content: briefPrompt }
+  ];
+
+  if (emit) await emit({ type: 'status', tool: 'crew_' + spec.key, text: `${spec.statusVerb}…` });
+
+  for (let iter = 0; iter < 5; iter++) {
+    let data;
+    try {
+      data = await groqChat(apiKey, messages, toolsForSpec);
+    } catch (e) {
+      if (e.code === 'tool_use_failed') {
+        const fallback = await groqChat(apiKey, messages, null);
+        const fbMsg = fallback && fallback.choices && fallback.choices[0] && fallback.choices[0].message;
+        return { key: spec.key, label: spec.label, text: (fbMsg && fbMsg.content) || '' };
+      }
+      return { key: spec.key, label: spec.label, text: '' };
+    }
+
+    const msg = data.choices[0].message;
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      return { key: spec.key, label: spec.label, text: msg.content || '' };
+    }
+
+    messages.push({ role: 'assistant', content: msg.content || '', tool_calls: msg.tool_calls });
+
+    const calls = msg.tool_calls.map(tc => {
+      const fnName = tc.function.name;
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments); } catch (_) {}
+      toolsUsed.push({ tool: fnName, args });
+      if (emit) emit({ type: 'status', tool: fnName, text: toolStatusText(fnName, args) }).catch(() => {});
+      return { tc, fnName, args };
+    });
+
+    const settled = await Promise.allSettled(calls.map(async c => {
+      const fn = TOOL_MAP[c.fnName];
+      if (!fn) return `Unknown tool: ${c.fnName}`;
+      try { return await fn(c.args); }
+      catch (e) { return `Tool error: ${e.message}`; }
+    }));
+
+    for (let i = 0; i < calls.length; i++) {
+      const { tc } = calls[i];
+      const outcome = settled[i];
+      const result = outcome.status === 'fulfilled' ? outcome.value : `Tool error: ${outcome.reason && outcome.reason.message}`;
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: trimToolResult(typeof result === 'string' ? result : JSON.stringify(result))
+      });
+    }
+  }
+
+  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
+  return { key: spec.key, label: spec.label, text: lastAssistant ? lastAssistant.content : '' };
+}
+
+// Orchestrator: run the specialist crew in parallel, then have a coordinator
+// pass weave their briefs into one finished, family-ready itinerary —
+// mirroring the CrewAI hierarchical crew (specialists → manager synthesis)
+// while staying on our existing free Groq + Worker stack.
+async function runTripCrew(userMessage, history, apiKey, profile, emit) {
+  const today = new Date().toISOString().split('T')[0];
+
+  let profileBrief = '';
+  if (profile && profile.name && profile.name !== 'Guest') {
+    const adults = profile.adults || 2;
+    const children = profile.children || 0;
+    const dietary = (profile.dietary || []).filter(d => d !== 'None').join(', ') || 'None';
+    const style = profile.travel_style || '';
+    const budget = profile.budget || '';
+    const homeCity = profile.home_city || '';
+    const childAges = profile.children_ages || '';
+    profileBrief = `\nTraveller profile — Name: ${profile.name}; Home city: ${homeCity}; Family: ${adults} adult(s), ${children} child(ren)${childAges ? ' (ages: ' + childAges + ')' : ''}; Dietary: ${dietary}; Travel style: ${style}; Budget: ${budget}.`;
+  }
+
+  const briefPrompt = `Trip request: "${userMessage}"${profileBrief}\nToday's date: ${today}.\nFocus only on your specialty area — the coordinator will combine everyone's findings into the final plan.`;
+
+  const toolsUsed = [];
+  const images = [];
+
+  if (emit) await emit({ type: 'status', tool: 'crew_kickoff', text: 'Assembling your travel planning crew (flights, hotels, activities)…' });
+
+  const briefs = await Promise.allSettled(
+    SPECIALISTS.map(spec => runSpecialist(spec, briefPrompt, apiKey, today, toolsUsed, emit))
+  );
+
+  const sections = [];
+  for (let i = 0; i < SPECIALISTS.length; i++) {
+    const spec = SPECIALISTS[i];
+    const outcome = briefs[i];
+    const text = (outcome.status === 'fulfilled' && outcome.value && outcome.value.text)
+      ? outcome.value.text.trim()
+      : '';
+    if (text) sections.push(`### ${spec.label} findings\n${text}`);
+  }
+  const crewFindings = sections.length
+    ? sections.join('\n\n')
+    : 'No specialist findings came back in time — build the plan from your own knowledge instead.';
+
+  if (emit) await emit({ type: 'status', tool: 'crew_coordinator', text: 'Coordinator is weaving everything into your itinerary…' });
+
+  const coordinatorTools = TOOLS_DEF.filter(t =>
+    ['destination_image', 'currency_info', 'find_local_transport'].includes(t.function && t.function.name));
+
+  const coordinatorPrompt = `You are the Travel Itinerary Coordinator on a family travel planning team — the most experienced
+member, responsible for taking your specialists' research and turning it into one polished, ready-to-book itinerary.
+
+Below are the briefs your specialists already gathered. Use them as your primary source of truth — don't duplicate
+their research from scratch, weave it together into a complete plan. You may still call your own tools (destination
+image, currency, local transport) to fill gaps.
+
+${crewFindings}
+
+Now build the final plan:
+1. Open with a destination image (destination_image tool) if one hasn't already appeared.
+2. Give a clear day-by-day itinerary blending the flights, hotels and activities your specialists found.
+3. Include concrete prices/price ranges for flights, hotels, food and activities, and a rough total cost estimate.
+4. Call out family-specific logistics (kids' needs, dietary requirements, packing/visa/safety tips).
+5. Check currency exchange if travelling internationally.
+Format with clear headers and sections. Be thorough and practical, and always finish with a written summary in
+your own words — never end after just running tools.
+Today's date: ${today}.${profileBrief}`;
+
+  const messages = [
+    { role: 'system', content: coordinatorPrompt },
+    ...(history || []).slice(-4),
+    { role: 'user', content: userMessage }
+  ];
+
+  const ensureFinalText = async (text) => {
+    if (text && text.trim()) return text;
+    try {
+      const nudge = [...messages, { role: 'user', content: 'Now write your full final itinerary for the user — clear, friendly, well-formatted, with headers and sections. Do not call any more tools.' }];
+      const followUp = await groqChat(apiKey, nudge, null);
+      const followUpMsg = followUp && followUp.choices && followUp.choices[0] && followUp.choices[0].message;
+      const followUpText = (followUpMsg && followUpMsg.content) || '';
+      if (followUpText.trim()) return followUpText;
+    } catch (_) {}
+    if (crewFindings) return `Here's what your planning crew found:\n\n${crewFindings}`;
+    return "I wasn't able to put together a full itinerary that time — could you try asking again with a bit more detail about where and when you'd like to travel?";
+  };
+
+  for (let iter = 0; iter < 8; iter++) {
+    let data;
+    try {
+      data = await groqChat(apiKey, messages, coordinatorTools);
+    } catch (e) {
+      if (e.code === 'tool_use_failed') {
+        const fallback = await groqChat(apiKey, messages, null);
+        const fbMsg = fallback.choices[0].message;
+        const text = await ensureFinalText(fbMsg.content || '');
+        await streamChunksTo(emit, text);
+        return { response: text, tools_used: toolsUsed, images };
+      }
+      throw e;
+    }
+
+    const msg = data.choices[0].message;
+    if (!msg.tool_calls || msg.tool_calls.length === 0) {
+      const text = await ensureFinalText(msg.content || '');
+      await streamChunksTo(emit, text);
+      return { response: text, tools_used: toolsUsed, images };
+    }
+
+    messages.push({ role: 'assistant', content: msg.content || '', tool_calls: msg.tool_calls });
+
+    const calls = msg.tool_calls.map(tc => {
+      const fnName = tc.function.name;
+      let args = {};
+      try { args = JSON.parse(tc.function.arguments); } catch (_) {}
+      toolsUsed.push({ tool: fnName, args });
+      return { tc, fnName, args };
+    });
+
+    if (emit) {
+      for (const c of calls) await emit({ type: 'status', tool: c.fnName, text: toolStatusText(c.fnName, c.args) });
+    }
+
+    const settled = await Promise.allSettled(calls.map(async c => {
+      const fn = TOOL_MAP[c.fnName];
+      if (!fn) return `Unknown tool: ${c.fnName}`;
+      try { return await fn(c.args); }
+      catch (e) { return `Tool error: ${e.message}`; }
+    }));
+
+    for (let i = 0; i < calls.length; i++) {
+      const { tc, fnName } = calls[i];
+      const outcome = settled[i];
+      const result = outcome.status === 'fulfilled' ? outcome.value : `Tool error: ${outcome.reason && outcome.reason.message}`;
+
+      if (fnName === 'destination_image') {
+        try {
+          const parsed = JSON.parse(result);
+          if (parsed.image_url && !images.includes(parsed.image_url)) {
+            images.push(parsed.image_url);
+            if (emit) await emit({ type: 'image', url: parsed.image_url });
+          }
+        } catch (_) {}
+      }
+
+      const pollinationsMatches = (typeof result === 'string' ? result : '').match(/https:\/\/image\.pollinations\.ai\/prompt\/[^\s\)\]"']+/g);
+      if (pollinationsMatches) {
+        for (const u of pollinationsMatches) {
+          if (!images.includes(u)) {
+            images.push(u);
+            if (emit) await emit({ type: 'image', url: u });
+          }
+        }
+      }
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: trimToolResult(typeof result === 'string' ? result : JSON.stringify(result))
+      });
+    }
+  }
+
+  const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
+  const finalText = await ensureFinalText(lastAssistant ? lastAssistant.content : '');
+  await streamChunksTo(emit, finalText);
+  return { response: finalText, tools_used: toolsUsed, images };
+}
+
 async function runAgent(userMessage, history, apiKey, profile, emit) {
   const today = new Date().toISOString().split('T')[0];
 
@@ -4207,7 +4563,10 @@ export default {
 
       const run = (async () => {
         try {
-          const result = await runAgent(message.trim(), history, api_key, user_profile || null, emit);
+          const trimmedMessage = message.trim();
+          const result = looksLikeTripPlanningRequest(trimmedMessage)
+            ? await runTripCrew(trimmedMessage, history, api_key, user_profile || null, emit)
+            : await runAgent(trimmedMessage, history, api_key, user_profile || null, emit);
           await emit({ type: 'done', tools_used: result.tools_used, images: result.images, response: result.response });
         } catch (err) {
           console.error('Agent error:', err);
