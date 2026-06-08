@@ -2558,7 +2558,14 @@ const HTML = `<!DOCTYPE html>
 <div class="toast" id="toast"></div>
 
 <script>
-  marked.setOptions({ breaks: true });
+  if (typeof marked !== 'undefined' && marked.setOptions) marked.setOptions({ breaks: true });
+
+  function mdParse(text) {
+    if (typeof marked !== 'undefined' && marked.parse) {
+      try { return marked.parse(text == null ? '' : text); } catch (_) {}
+    }
+    return escHtml(text == null ? '' : text).replace(/\\n/g, '<br>');
+  }
 
   // ── Page management ──────────────────────────────────────────────────────
   function showPage(id) {
@@ -2814,9 +2821,9 @@ const HTML = `<!DOCTYPE html>
       .pointAltitude(0.02)
       .pointRadius(0.5)
       .pointLabel(d =>
-        '<div style="font-family:\'Montserrat\',system-ui,sans-serif;background:#3d3a32;color:#f7f1e6;' +
+        '<div style="font-family:\\'Montserrat\\',system-ui,sans-serif;background:#3d3a32;color:#f7f1e6;' +
         'padding:10px 14px;border-radius:10px;border:1px solid #4d473c;max-width:230px;line-height:1.4">' +
-        '<div style="font-family:\'Cormorant Garamond\',Georgia,serif;font-size:1.05rem;font-weight:600;margin-bottom:2px">' + escHtml(d.name) + '</div>' +
+        '<div style="font-family:\\'Cormorant Garamond\\',Georgia,serif;font-size:1.05rem;font-weight:600;margin-bottom:2px">' + escHtml(d.name) + '</div>' +
         '<div style="font-size:0.76rem;color:' + fitColor(d.fit) + ';font-weight:600;letter-spacing:0.4px;text-transform:uppercase">' +
           'Family fit ' + d.fit + '/10 · ' + escHtml(fitLabel(d.fit)) +
         '</div>' +
@@ -2969,7 +2976,7 @@ const HTML = `<!DOCTYPE html>
       errEl.style.display = 'block';
       return;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    if (!/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email)) {
       errEl.textContent = 'Please enter a valid email address.';
       errEl.style.display = 'block';
       return;
@@ -3236,7 +3243,7 @@ const HTML = `<!DOCTYPE html>
         let data = {};
         try { data = await res.json(); } catch (_) {}
         settleThinking(thinking);
-        content.innerHTML = marked.parse('**' + escHtml(data.detail || data.error || 'Server error') + '**');
+        content.innerHTML = mdParse('**' + escHtml(data.detail || data.error || 'Server error') + '**');
         sendBtn.disabled = false;
         inputEl.focus();
         return;
@@ -3250,7 +3257,7 @@ const HTML = `<!DOCTYPE html>
         const { done, value } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
-        const lines = buf.split('\n');
+        const lines = buf.split('\\n');
         buf = lines.pop();
 
         for (const line of lines) {
@@ -3264,7 +3271,7 @@ const HTML = `<!DOCTYPE html>
           } else if (evt.type === 'chunk') {
             if (!gotChunks) { gotChunks = true; settleThinking(thinking); }
             raw += evt.text;
-            content.innerHTML = marked.parse(raw) + '<span class="caret"></span>';
+            content.innerHTML = mdParse(raw) + '<span class="caret"></span>';
             scroll();
           } else if (evt.type === 'image') {
             if (!images.includes(evt.url)) { images.push(evt.url); addImageToBubble(bubble, evt.url); }
@@ -3274,13 +3281,13 @@ const HTML = `<!DOCTYPE html>
             if (typeof evt.response === 'string' && evt.response) raw = evt.response;
           } else if (evt.type === 'error') {
             settleThinking(thinking);
-            content.innerHTML = marked.parse('**Error:** ' + escHtml(evt.error || 'Something went wrong.'));
+            content.innerHTML = mdParse('**Error:** ' + escHtml(evt.error || 'Something went wrong.'));
           }
         }
       }
 
       settleThinking(thinking);
-      content.innerHTML = marked.parse(raw || '');
+      content.innerHTML = mdParse(raw || '');
       if (images && images.length) addImageToBubble(bubble, images[0]);
       addToolTags(bubble, toolsUsed);
 
@@ -3289,7 +3296,7 @@ const HTML = `<!DOCTYPE html>
       if (history.length > 20) history = history.slice(-20);
     } catch (err) {
       settleThinking(thinking);
-      content.innerHTML = marked.parse('**Network error:** ' + escHtml(err.message));
+      content.innerHTML = mdParse('**Network error:** ' + escHtml(err.message));
     }
 
     scroll();
