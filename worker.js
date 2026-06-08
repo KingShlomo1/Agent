@@ -3,10 +3,23 @@
 
 // ─── Tool implementations (all async, using fetch) ───────────────────────────
 
+// Every external call must be bounded — a single slow API must never be able
+// to freeze trip generation. fetchWithTimeout aborts the request once the
+// budget elapses so callers can fall back to graceful, friendly content.
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function toolWebSearch(query, maxResults = 5) {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
+    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } }, 10000);
     const data = await res.json();
 
     const lines = [];
@@ -36,14 +49,14 @@ async function toolWebSearch(query, maxResults = 5) {
 async function toolWeather(location, days = 7) {
   try {
     const geoUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
-    const geoRes = await fetch(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
+    const geoRes = await fetchWithTimeout(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } }, 5000);
     const geoData = await geoRes.json();
     if (!geoData || geoData.length === 0) return `Location "${location}" not found.`;
 
     const { lat, lon, display_name } = geoData[0];
     const forecastDays = Math.min(parseInt(days) || 7, 16);
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto&forecast_days=${forecastDays}`;
-    const wRes = await fetch(weatherUrl);
+    const wRes = await fetchWithTimeout(weatherUrl, {}, 5000);
     const wData = await wRes.json();
     const daily = wData.daily;
 
@@ -67,6 +80,7 @@ async function toolWeather(location, days = 7) {
     }
     return lines.join('\n');
   } catch (e) {
+    if (e.name === 'AbortError') return `Weather forecast for ${location} is temporarily unavailable (the forecast service timed out) — continue planning without it for now.`;
     return `Weather error: ${e.message}`;
   }
 }
@@ -111,24 +125,30 @@ async function toolDestinationImage(location) {
   return JSON.stringify({ image_url: imageUrl, location, type: 'destination_image' });
 }
 
+// Currency lookup is the single most common cause of the planner appearing to
+// "hang" — it must never block trip generation. Each provider gets a hard 3s
+// budget; if both fail or time out we return a friendly, non-blocking notice
+// instead of an error string so the rest of the plan keeps moving.
 async function toolCurrency(from, to) {
-  const f = from.toUpperCase();
-  const t = to.toUpperCase();
+  const f = (from || '').toUpperCase();
+  const t = (to || '').toUpperCase();
+  if (!f || !t) return `⚠ Live exchange rate unavailable — currency codes were not provided. Continuing without a conversion rate.`;
+
   try {
-    const res = await fetch(`https://open.er-api.com/v6/latest/${f}`);
+    const res = await fetchWithTimeout(`https://open.er-api.com/v6/latest/${f}`, {}, 3000);
     const data = await res.json();
     const rate = data.rates && data.rates[t];
     if (rate == null) throw new Error('rate unavailable');
     return `1 ${f} = ${rate} ${t} (live mid-market rate)`;
   } catch (e1) {
     try {
-      const res2 = await fetch(`https://api.frankfurter.dev/v1/latest?base=${f}&symbols=${t}`);
+      const res2 = await fetchWithTimeout(`https://api.frankfurter.dev/v1/latest?base=${f}&symbols=${t}`, {}, 3000);
       const data2 = await res2.json();
       const rate2 = data2.rates && data2.rates[t];
       if (rate2 == null) throw new Error('rate unavailable');
       return `1 ${f} = ${rate2} ${t} (European Central Bank)`;
     } catch (e2) {
-      return `Currency error: ${e2.message}`;
+      return `⚠ Live exchange rate unavailable right now — skip the conversion and continue planning the trip; the rest of the itinerary, hotels, restaurants and weather are unaffected.`;
     }
   }
 }
@@ -536,26 +556,37 @@ Today's date: ${today}${profileContext}`;
       tool_calls: msg.tool_calls
     });
 
-    // Execute each tool call, narrating what the agent is doing as it goes
-    for (const tc of msg.tool_calls) {
+    // Run every requested tool call in parallel — currency, weather, hotels,
+    // flights etc. must never queue up behind one another. A single slow or
+    // failing tool (e.g. currency lookup) can no longer stall the others;
+    // each one is individually time-boxed (see fetchWithTimeout) and
+    // Promise.allSettled guarantees we always move on once they all land.
+    const calls = msg.tool_calls.map(tc => {
       const fnName = tc.function.name;
       let args = {};
       try { args = JSON.parse(tc.function.arguments); } catch (_) {}
-
       toolsUsed.push({ tool: fnName, args });
-      if (emit) await emit({ type: 'status', tool: fnName, text: toolStatusText(fnName, args) });
+      return { tc, fnName, args };
+    });
 
-      let result = '';
-      const fn = TOOL_MAP[fnName];
-      if (fn) {
-        try {
-          result = await fn(args);
-        } catch (e) {
-          result = `Tool error: ${e.message}`;
-        }
-      } else {
-        result = `Unknown tool: ${fnName}`;
+    if (emit) {
+      for (const c of calls) await emit({ type: 'status', tool: c.fnName, text: toolStatusText(c.fnName, c.args) });
+    }
+
+    const settled = await Promise.allSettled(calls.map(async c => {
+      const fn = TOOL_MAP[c.fnName];
+      if (!fn) return `Unknown tool: ${c.fnName}`;
+      try {
+        return await fn(c.args);
+      } catch (e) {
+        return `Tool error: ${e.message}`;
       }
+    }));
+
+    for (let i = 0; i < calls.length; i++) {
+      const { tc, fnName } = calls[i];
+      const outcome = settled[i];
+      const result = outcome.status === 'fulfilled' ? outcome.value : `Tool error: ${outcome.reason && outcome.reason.message}`;
 
       // Extract destination images
       if (fnName === 'destination_image') {
@@ -1982,6 +2013,17 @@ const HTML = `<!DOCTYPE html>
       font-size: 1.05rem;
       font-weight: 600;
       color: var(--text-bright);
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .img-fallback-icon {
+      font-size: 2rem;
+      line-height: 1;
+    }
+
+    .img-fallback-label {
+      font-size: 1.05rem;
     }
 
     .tools-row {
@@ -3396,11 +3438,35 @@ const HTML = `<!DOCTYPE html>
   // AI-generated photos occasionally fail to load (slow generation, network) —
   // swap broken <img> elements for a tasteful gradient placeholder instead of
   // leaving a broken-image icon on screen.
-  function imgFallback(el, label) {
+  // Destination photos must never show a broken "unavailable" state. Build a
+  // chain of alternate providers/seeds to retry before falling back to a
+  // tasteful gradient placeholder card.
+  function altPhotoUrls(srcUrl, destination) {
+    const urls = [];
+    try {
+      const u = new URL(srcUrl, location.href);
+      const m = decodeURIComponent(u.pathname).match(/\/prompt\/(.+)/);
+      const basePrompt = m ? m[1] : ('beautiful travel destination ' + (destination || 'family vacation') + ' photorealistic golden hour landscape');
+      const enc = encodeURIComponent(basePrompt);
+      urls.push('https://image.pollinations.ai/prompt/' + enc + '?width=900&height=450&nologo=true&seed=' + Math.floor(Math.random() * 10000));
+      urls.push('https://image.pollinations.ai/prompt/' + enc + '?width=900&height=450&nologo=true&model=flux&seed=' + Math.floor(Math.random() * 10000));
+    } catch (_) {}
+    const q = encodeURIComponent((destination || 'travel landscape scenic') + ' family vacation');
+    urls.push('https://source.unsplash.com/featured/900x450/?' + q);
+    return urls;
+  }
+
+  function imgFallback(el, label, queue) {
     if (!el || !el.parentNode) return;
+    if (queue && queue.length) {
+      const next = queue.shift();
+      el.onerror = () => imgFallback(el, label, queue);
+      el.src = next;
+      return;
+    }
     const div = document.createElement('div');
     div.className = (el.className || '') + ' img-fallback';
-    div.textContent = label || 'Photo unavailable';
+    div.innerHTML = '<span class="img-fallback-icon">🏞️<\/span><span class="img-fallback-label">' + escHtml(label || 'Destination') + '<\/span>';
     el.replaceWith(div);
   }
 
@@ -3468,7 +3534,7 @@ const HTML = `<!DOCTYPE html>
     img.className = 'dest-img';
     img.alt = 'Destination';
     img.loading = 'lazy';
-    img.onerror = () => imgFallback(img, 'Destination photo unavailable — try again in a moment');
+    img.onerror = () => imgFallback(img, 'Destination', altPhotoUrls(url));
     bubble.insertBefore(img, bubble.firstChild);
     scroll();
   }
@@ -3937,7 +4003,7 @@ const HTML = `<!DOCTYPE html>
             const card = document.createElement('div');
             card.className = 'reco-card';
             card.innerHTML =
-              '<img src="' + imgUrl + '" alt="' + escAttr(it.destination || '') + '" data-dest="' + escAttr(it.destination || 'Destination photo unavailable') + '" loading="lazy" onerror="imgFallback(this, this.dataset.dest)" />' +
+              '<img src="' + imgUrl + '" alt="' + escAttr(it.destination || '') + '" data-dest="' + escAttr(it.destination || 'Destination') + '" loading="lazy" onerror="imgFallback(this, this.dataset.dest, altPhotoUrls(this.src, this.dataset.dest))" />' +
               '<div class="reco-body">' +
                 '<div class="reco-dest">' + escHtml(it.destination || '') + '</div>' +
                 '<div class="reco-why">' + escHtml(it.why || '') + '</div>' +
