@@ -1719,6 +1719,98 @@ const HTML = `<!DOCTYPE html>
     .price-tool-result { margin-top: 12px; font-size: 0.84rem; color: var(--text-main); line-height: 1.6; }
     .price-tool-result .pt-rate { color: var(--green); font-weight: 700; }
 
+    /* ── Dashboard ── */
+    .dash-wrap {
+      flex: 1;
+      overflow-y: auto;
+      padding: 28px 24px 60px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .dash-inner { width: 100%; max-width: 1080px; }
+    .dash-greeting h2 {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.6rem;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+    }
+    .dash-greeting p { color: var(--text-muted); font-size: 0.92rem; margin-bottom: 22px; }
+
+    .dash-section-label {
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.74rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+      margin: 26px 0 12px;
+    }
+    .dash-section-label:first-child { margin-top: 0; }
+
+    .dash-quick-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .dash-quick-card {
+      flex: 1 1 200px;
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px 18px;
+      cursor: pointer;
+      transition: border-color 0.2s ease, transform 0.2s ease;
+    }
+    .dash-quick-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+    .dash-quick-card h3 {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.1rem;
+      color: var(--text-bright);
+      margin-bottom: 4px;
+    }
+    .dash-quick-card p { font-size: 0.8rem; color: var(--text-muted); }
+
+    .dash-photo-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .dash-photo-card {
+      position: relative;
+      height: 200px;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      cursor: pointer;
+      background: linear-gradient(135deg, var(--bg-panel), var(--bg-card));
+      background-size: cover;
+      background-position: center;
+      transition: transform 0.3s ease, border-color 0.3s ease;
+    }
+    .dash-photo-card:hover { transform: translateY(-3px) scale(1.01); border-color: var(--accent); }
+    .dash-photo-overlay {
+      position: absolute;
+      inset: auto 0 0 0;
+      padding: 14px 16px;
+      background: linear-gradient(to top, rgba(20, 18, 16, 0.92), rgba(20, 18, 16, 0));
+    }
+    .dash-photo-overlay h3 {
+      font-family: 'Cormorant Garamond', 'Cormorant SC', Georgia, serif;
+      font-size: 1.2rem;
+      color: #fff;
+      margin-bottom: 2px;
+    }
+    .dash-photo-overlay p { font-size: 0.76rem; color: rgba(255,255,255,0.82); }
+    .dash-photo-overlay span.dpc-cta {
+      display: inline-block;
+      margin-top: 6px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: var(--accent);
+    }
+
     /* Chat body */
     .chat-body {
       flex: 1;
@@ -2377,7 +2469,8 @@ const HTML = `<!DOCTYPE html>
   <header class="app-header">
     <div class="app-brand">FamilyTripAI</div>
     <nav class="app-nav">
-      <button class="nav-tab active" data-tab="chat" onclick="switchTab('chat')">Chat</button>
+      <button class="nav-tab active" data-tab="dashboard" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="nav-tab" data-tab="chat" onclick="switchTab('chat')">Chat</button>
       <button class="nav-tab" data-tab="trips" onclick="switchTab('trips')">Trips</button>
       <button class="nav-tab" data-tab="prices" onclick="switchTab('prices')">Prices</button>
       <button class="nav-tab" data-tab="forme" onclick="switchTab('forme')">For Me</button>
@@ -2393,8 +2486,47 @@ const HTML = `<!DOCTYPE html>
     </div>
   </header>
 
+  <!-- TAB: Dashboard -->
+  <div class="tab-panel active" id="tab-dashboard" data-tab="dashboard">
+    <div class="dash-wrap">
+      <div class="dash-inner">
+        <div class="dash-greeting">
+          <h2 id="dash-greeting-h">Welcome back</h2>
+          <p id="dash-greeting-p">Here's a quick look at what FamilyTripAI can plan for you next.</p>
+        </div>
+
+        <div class="dash-section-label">Jump back in</div>
+        <div class="dash-quick-row">
+          <div class="dash-quick-card" onclick="switchTab('chat')">
+            <h3>Plan a trip</h3>
+            <p>Chat with the AI and get a full day-by-day family itinerary.</p>
+          </div>
+          <div class="dash-quick-card" onclick="switchTab('trips')">
+            <h3>Browse trips</h3>
+            <p>Search and compare flights, hotels and activities.</p>
+          </div>
+          <div class="dash-quick-card" onclick="switchTab('prices')">
+            <h3>Check prices</h3>
+            <p>Live currency rates and estimated costs for popular destinations.</p>
+          </div>
+          <div class="dash-quick-card" onclick="switchTab('forme')">
+            <h3>For Me</h3>
+            <p>Personalised picks based on your travel profile.</p>
+          </div>
+          <div class="dash-quick-card" onclick="switchTab('globe')">
+            <h3>Explore the globe</h3>
+            <p>Spin a 3D globe of family-friendly destinations worldwide.</p>
+          </div>
+        </div>
+
+        <div class="dash-section-label">Featured destinations</div>
+        <div class="dash-photo-grid" id="dash-photo-grid"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- TAB: Chat -->
-  <div class="tab-panel active" id="tab-chat" data-tab="chat">
+  <div class="tab-panel" id="tab-chat" data-tab="chat">
     <div class="chat-body">
       <div id="messages">
         <div class="welcome" id="welcome">
@@ -2728,13 +2860,13 @@ const HTML = `<!DOCTYPE html>
 
   const HERO_SLIDES = [
     { seed: 11, prompt: 'Great Wall of China winding through misty green mountains aerial view golden morning light professional travel photography' },
-    { seed: 22, prompt: 'Shanghai skyline at dusk river reflections glowing lights professional travel photography editorial' },
+    { seed: 91, prompt: 'Florence Italy skyline Duomo cathedral terracotta dome golden sunset rooftop view professional travel photography editorial' },
+    { seed: 22, prompt: 'Shanghai China Yu Garden bazaar glowing lanterns dusk traditional architecture crowds professional travel photography editorial' },
+    { seed: 92, prompt: 'Thailand longtail boat turquoise water limestone karst cliffs woman traveller professional travel photography editorial' },
+    { seed: 93, prompt: 'Berlin Germany sunset cityscape river Spree bridges golden hour skyline reflections professional travel photography editorial' },
     { seed: 33, prompt: 'Santorini Greece white houses blue domes cliffside sunset professional travel photography editorial' },
     { seed: 44, prompt: 'Paris Eiffel Tower Seine river golden hour romantic professional travel photography editorial' },
-    { seed: 55, prompt: 'Bali Indonesia emerald rice terraces morning mist tropical professional travel photography editorial' },
-    { seed: 66, prompt: 'Machu Picchu Peru ancient stone ruins misty mountains clouds professional travel photography editorial' },
-    { seed: 77, prompt: 'Venice Italy canal gondola golden sunset reflections professional travel photography editorial' },
-    { seed: 88, prompt: 'Kyoto Japan traditional temple autumn maple leaves professional travel photography editorial' }
+    { seed: 55, prompt: 'Bali Indonesia emerald rice terraces morning mist tropical professional travel photography editorial' }
   ];
 
   function initHeroSlideshow() {
@@ -2773,6 +2905,54 @@ const HTML = `<!DOCTYPE html>
       slideEls[current].classList.add('active');
       dotEls[current].classList.add('active');
     }, 6000);
+  }
+
+  // ── Dashboard: featured-destination gallery (home page) ──────────────────
+  const DASH_DESTINATIONS = [
+    { name: 'Great Wall, China', blurb: 'Hike the ancient wall through misty mountains', seed: 11,
+      prompt: 'Great Wall of China winding through misty green mountains aerial view golden morning light professional travel photography',
+      ask: 'Plan a family trip to the Great Wall of China and Beijing' },
+    { name: 'Florence, Italy', blurb: 'Renaissance art, gelato and that famous skyline', seed: 91,
+      prompt: 'Florence Italy skyline Duomo cathedral terracotta dome golden sunset rooftop view professional travel photography editorial',
+      ask: 'Plan a family trip to Florence, Italy' },
+    { name: 'Shanghai, China', blurb: 'Glowing lanterns and bazaars at the Yu Garden', seed: 22,
+      prompt: 'Shanghai China Yu Garden bazaar glowing lanterns dusk traditional architecture crowds professional travel photography editorial',
+      ask: 'Plan a family trip to Shanghai, China' },
+    { name: 'Krabi, Thailand', blurb: 'Longtail boats among turquoise limestone cliffs', seed: 92,
+      prompt: 'Thailand longtail boat turquoise water limestone karst cliffs woman traveller professional travel photography editorial',
+      ask: 'Plan a family trip to Krabi, Thailand' },
+    { name: 'Berlin, Germany', blurb: 'Riverside sunsets, history and bridges', seed: 93,
+      prompt: 'Berlin Germany sunset cityscape river Spree bridges golden hour skyline reflections professional travel photography editorial',
+      ask: 'Plan a family trip to Berlin, Germany' }
+  ];
+
+  function planFromDashboard(ask) {
+    switchTab('chat');
+    inputEl.value = ask;
+    inputEl.focus();
+    resize();
+  }
+
+  function initDashboard() {
+    const grid = document.getElementById('dash-photo-grid');
+    if (!grid || grid.dataset.ready) return;
+    grid.dataset.ready = '1';
+
+    DASH_DESTINATIONS.forEach((d) => {
+      const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(d.prompt) +
+                  '?width=600&height=420&nologo=true&seed=' + d.seed;
+      const card = document.createElement('div');
+      card.className = 'dash-photo-card';
+      card.innerHTML = '<div class="dash-photo-overlay"><h3>' + escHtml(d.name) + '</h3>' +
+        '<p>' + escHtml(d.blurb) + '</p><span class="dpc-cta">Plan a trip here &rarr;</span></div>';
+      card.addEventListener('click', () => planFromDashboard(d.ask));
+      grid.appendChild(card);
+
+      const preload = new Image();
+      preload.onload = () => { card.style.backgroundImage = "url('" + url + "')"; };
+      preload.onerror = () => { /* keep gradient fallback */ };
+      preload.src = url;
+    });
   }
 
   // ── Selling section: live currency ticker + rotating destination prices ──
@@ -3101,6 +3281,14 @@ const HTML = `<!DOCTYPE html>
     if (profile && name !== 'Guest') {
       document.getElementById('welcome-heading').textContent = 'Welcome back, ' + first + '! Where is your family headed?';
     }
+
+    const dashH = document.getElementById('dash-greeting-h');
+    const dashP = document.getElementById('dash-greeting-p');
+    if (dashH) dashH.textContent = (profile && name !== 'Guest') ? ('Welcome back, ' + first + '!') : 'Welcome to FamilyTripAI';
+    if (dashP) dashP.textContent = (profile && profile.home_city)
+      ? ('Planning from ' + profile.home_city + ' — here\\'s a quick look at what\\'s next.')
+      : 'Here\\'s a quick look at what FamilyTripAI can plan for you next.';
+    initDashboard();
 
     // Profile chips
     const chipsEl = document.getElementById('welcome-chips');
