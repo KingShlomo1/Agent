@@ -119,11 +119,36 @@ async function toolHotels(location, checkin, checkout, guests = 2, rooms = 1) {
   return result;
 }
 
+// AI-generated images (Pollinations) are slow to render and frequently time
+// out or come back near-identical for different destinations. Real photos of
+// the actual place load faster and look far better, so we try Wikipedia's
+// summary API first (it returns a real, CDN-hosted photo of the destination)
+// and only fall back to AI generation if no real photo can be found in time.
+async function fetchWikiPhoto(query, width = 1000) {
+  try {
+    const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(query.split(',')[0].trim())}`;
+    const res = await fetchWithTimeout(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } }, 5000);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const src = (data.originalimage && data.originalimage.source) || (data.thumbnail && data.thumbnail.source);
+    if (!src) return null;
+    // Wikipedia thumbnail URLs encode the requested width as `/<width>px-filename`;
+    // rewrite it so we get an appropriately sized real photo.
+    return src.replace(/\/\d+px-/, `/${width}px-`);
+  } catch (_) {
+    return null;
+  }
+}
+
 async function toolDestinationImage(location) {
+  const real = await fetchWikiPhoto(location, 1000);
+  if (real) return JSON.stringify({ image_url: real, location, type: 'destination_image', source: 'wikipedia' });
+
   const prompt = encodeURIComponent(`stunning travel destination ${location} beautiful landscape family vacation photorealistic golden hour`);
   const imageUrl = `https://image.pollinations.ai/prompt/${prompt}?width=900&height=450&nologo=true&seed=42`;
-  return JSON.stringify({ image_url: imageUrl, location, type: 'destination_image' });
+  return JSON.stringify({ image_url: imageUrl, location, type: 'destination_image', source: 'generated' });
 }
+
 
 // Currency lookup is the single most common cause of the planner appearing to
 // "hang" — it must never block trip generation. Each provider gets a hard 3s
@@ -2903,15 +2928,77 @@ const HTML = `<!DOCTYPE html>
   }
 
   const HERO_SLIDES = [
-    { seed: 11, prompt: 'Great Wall of China winding through misty green mountains aerial view golden morning light professional travel photography' },
-    { seed: 91, prompt: 'Florence Italy skyline Duomo cathedral terracotta dome golden sunset rooftop view professional travel photography editorial' },
-    { seed: 22, prompt: 'Shanghai China Yu Garden bazaar glowing lanterns dusk traditional architecture crowds professional travel photography editorial' },
-    { seed: 92, prompt: 'Thailand longtail boat turquoise water limestone karst cliffs woman traveller professional travel photography editorial' },
-    { seed: 93, prompt: 'Berlin Germany sunset cityscape river Spree bridges golden hour skyline reflections professional travel photography editorial' },
-    { seed: 33, prompt: 'Santorini Greece white houses blue domes cliffside sunset professional travel photography editorial' },
-    { seed: 44, prompt: 'Paris Eiffel Tower Seine river golden hour romantic professional travel photography editorial' },
-    { seed: 55, prompt: 'Bali Indonesia emerald rice terraces morning mist tropical professional travel photography editorial' }
+    { wiki: 'Great Wall of China', seed: 11, prompt: 'Great Wall of China winding through misty green mountains aerial view golden morning light professional travel photography' },
+    { wiki: 'Florence', seed: 91, prompt: 'Florence Italy skyline Duomo cathedral terracotta dome golden sunset rooftop view professional travel photography editorial' },
+    { wiki: 'Yu Garden', seed: 22, prompt: 'Shanghai China Yu Garden bazaar glowing lanterns dusk traditional architecture crowds professional travel photography editorial' },
+    { wiki: 'Railay Beach', seed: 92, prompt: 'Thailand longtail boat turquoise water limestone karst cliffs woman traveller professional travel photography editorial' },
+    { wiki: 'Berlin', seed: 93, prompt: 'Berlin Germany sunset cityscape river Spree bridges golden hour skyline reflections professional travel photography editorial' },
+    { wiki: 'Santorini', seed: 33, prompt: 'Santorini Greece white houses blue domes cliffside sunset professional travel photography editorial' },
+    { wiki: 'Eiffel Tower', seed: 44, prompt: 'Paris Eiffel Tower Seine river golden hour romantic professional travel photography editorial' },
+    { wiki: 'Ubud', seed: 55, prompt: 'Bali Indonesia emerald rice terraces morning mist tropical professional travel photography editorial' }
   ];
+
+  // Real photos load far faster and look truer-to-life than on-demand AI
+  // generation (which is slow and often returns near-identical results for
+  // different places). Try Wikipedia's summary API for a genuine photo of
+  // the destination first; fall back to AI generation, then a gradient card.
+  // Wikipedia thumbnail URLs encode the requested size as a "<number>px-"
+  // path segment (e.g. "/320px-Filename.jpg") — swap it for the size we want.
+  // Plain string scanning avoids regex-escaping pitfalls inside this template.
+  function rewriteThumbWidth(url, width) {
+    const marker = 'px-';
+    const idx = url.indexOf(marker);
+    if (idx < 0) return url;
+    let start = idx;
+    while (start > 0 && url.charCodeAt(start - 1) >= 48 && url.charCodeAt(start - 1) <= 57) start--;
+    if (start === idx) return url;
+    return url.slice(0, start) + width + url.slice(idx);
+  }
+
+  const wikiPhotoCache = {};
+  async function loadRealPhoto(title, width) {
+    if (!title) return null;
+    const cacheKey = title + '|' + width;
+    if (cacheKey in wikiPhotoCache) return wikiPhotoCache[cacheKey];
+    try {
+      const res = await fetch('https://en.wikipedia.org/api/rest_v1/page/summary/' + encodeURIComponent(title), {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) { wikiPhotoCache[cacheKey] = null; return null; }
+      const data = await res.json();
+      const src = (data.originalimage && data.originalimage.source) || (data.thumbnail && data.thumbnail.source);
+      const url = src ? rewriteThumbWidth(src, width) : null;
+      wikiPhotoCache[cacheKey] = url;
+      return url;
+    } catch (_) {
+      wikiPhotoCache[cacheKey] = null;
+      return null;
+    }
+  }
+
+  function loadBackgroundPhoto(el, slide, width) {
+    const generatedUrl = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(slide.prompt) +
+                '?width=' + width + '&height=' + Math.round(width * 0.625) + '&nologo=true&seed=' + slide.seed;
+    const apply = (url) => { el.style.backgroundImage = "url('" + url + "')"; };
+
+    loadRealPhoto(slide.wiki, width).then((realUrl) => {
+      if (realUrl) {
+        const probe = new Image();
+        probe.onload = () => apply(realUrl);
+        probe.onerror = () => fallbackToGenerated();
+        probe.src = realUrl;
+      } else {
+        fallbackToGenerated();
+      }
+    });
+
+    function fallbackToGenerated() {
+      const probe = new Image();
+      probe.onload = () => apply(generatedUrl);
+      probe.onerror = () => { /* keep gradient placeholder */ };
+      probe.src = generatedUrl;
+    }
+  }
 
   function initHeroSlideshow() {
     const stage = document.getElementById('hero-slideshow');
@@ -2920,18 +3007,11 @@ const HTML = `<!DOCTYPE html>
     stage.dataset.ready = '1';
 
     HERO_SLIDES.forEach((slide, i) => {
-      const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(slide.prompt) +
-                  '?width=1600&height=1000&nologo=true&seed=' + slide.seed;
       const div = document.createElement('div');
       div.className = 'hero-slide' + (i === 0 ? ' active' : '');
       stage.appendChild(div);
 
-      // Keep the gradient placeholder visible until the photo actually loads —
-      // avoids a blank/broken slide if pollinations.ai is slow or unreachable.
-      const preload = new Image();
-      preload.onload = () => { div.style.backgroundImage = "url('" + url + "')"; };
-      preload.onerror = () => { /* keep gradient fallback */ };
-      preload.src = url;
+      loadBackgroundPhoto(div, slide, 1600);
 
       const dot = document.createElement('span');
       dot.className = 'hero-dot' + (i === 0 ? ' active' : '');
@@ -2953,19 +3033,19 @@ const HTML = `<!DOCTYPE html>
 
   // ── Dashboard: featured-destination gallery (home page) ──────────────────
   const DASH_DESTINATIONS = [
-    { name: 'Great Wall, China', blurb: 'Hike the ancient wall through misty mountains', seed: 11,
+    { name: 'Great Wall, China', blurb: 'Hike the ancient wall through misty mountains', wiki: 'Great Wall of China', seed: 11,
       prompt: 'Great Wall of China winding through misty green mountains aerial view golden morning light professional travel photography',
       ask: 'Plan a family trip to the Great Wall of China and Beijing' },
-    { name: 'Florence, Italy', blurb: 'Renaissance art, gelato and that famous skyline', seed: 91,
+    { name: 'Florence, Italy', blurb: 'Renaissance art, gelato and that famous skyline', wiki: 'Florence', seed: 91,
       prompt: 'Florence Italy skyline Duomo cathedral terracotta dome golden sunset rooftop view professional travel photography editorial',
       ask: 'Plan a family trip to Florence, Italy' },
-    { name: 'Shanghai, China', blurb: 'Glowing lanterns and bazaars at the Yu Garden', seed: 22,
+    { name: 'Shanghai, China', blurb: 'Glowing lanterns and bazaars at the Yu Garden', wiki: 'Yu Garden', seed: 22,
       prompt: 'Shanghai China Yu Garden bazaar glowing lanterns dusk traditional architecture crowds professional travel photography editorial',
       ask: 'Plan a family trip to Shanghai, China' },
-    { name: 'Krabi, Thailand', blurb: 'Longtail boats among turquoise limestone cliffs', seed: 92,
+    { name: 'Krabi, Thailand', blurb: 'Longtail boats among turquoise limestone cliffs', wiki: 'Railay Beach', seed: 92,
       prompt: 'Thailand longtail boat turquoise water limestone karst cliffs woman traveller professional travel photography editorial',
       ask: 'Plan a family trip to Krabi, Thailand' },
-    { name: 'Berlin, Germany', blurb: 'Riverside sunsets, history and bridges', seed: 93,
+    { name: 'Berlin, Germany', blurb: 'Riverside sunsets, history and bridges', wiki: 'Berlin', seed: 93,
       prompt: 'Berlin Germany sunset cityscape river Spree bridges golden hour skyline reflections professional travel photography editorial',
       ask: 'Plan a family trip to Berlin, Germany' }
   ];
@@ -2983,8 +3063,6 @@ const HTML = `<!DOCTYPE html>
     grid.dataset.ready = '1';
 
     DASH_DESTINATIONS.forEach((d) => {
-      const url = 'https://image.pollinations.ai/prompt/' + encodeURIComponent(d.prompt) +
-                  '?width=600&height=420&nologo=true&seed=' + d.seed;
       const card = document.createElement('div');
       card.className = 'dash-photo-card';
       card.innerHTML = '<div class="dash-photo-overlay"><h3>' + escHtml(d.name) + '</h3>' +
@@ -2992,10 +3070,7 @@ const HTML = `<!DOCTYPE html>
       card.addEventListener('click', () => planFromDashboard(d.ask));
       grid.appendChild(card);
 
-      const preload = new Image();
-      preload.onload = () => { card.style.backgroundImage = "url('" + url + "')"; };
-      preload.onerror = () => { /* keep gradient fallback */ };
-      preload.src = url;
+      loadBackgroundPhoto(card, d, 600);
     });
   }
 
