@@ -381,8 +381,18 @@ When planning a trip, always:
 7. Check currency exchange if travelling internationally
 8. Build a clear day-by-day itinerary
 
+Don't stop at the obvious basics — think through everything a trip like this actually requires, including the
+logistics specific to its activities. For example:
+- Safari trips: game-drive vehicle/4x4 hire or lodge transfers, ranger guides, park entry permits, vaccination & malaria advice
+- Ski trips: lift passes, equipment & clothing rental, ski school for kids, transfers to/from the resort, altitude tips
+- Beach/diving trips: gear rental, lessons/certification for kids, reef/marine park fees
+- City breaks: transit passes, museum/attraction skip-the-line tickets, walking-tour bookings
+Call out and (where a tool exists) look up these activity-specific bookings and costs alongside flights, hotels,
+food and general activities, so the plan is genuinely complete and ready to act on — not just a checklist of basics.
+
 Think carefully about children's needs: energy levels, meal times, rest breaks, age-appropriate activities, and safety.
-Format responses with clear headers and sections. Be thorough and practical.
+Format responses with clear headers and sections. Be thorough and practical. Always finish with a written summary —
+never end a turn after just running tools without giving the user your actual answer in words.
 Today's date: ${today}${profileContext}`;
 
   const messages = [
@@ -465,6 +475,34 @@ Today's date: ${today}${profileContext}`;
     if (buf) await emit({ type: 'chunk', text: buf });
   };
 
+  // Groq sometimes finishes a tool-calling run with an empty (or whitespace-only)
+  // assistant message — the agent "thinks" but never actually writes the answer.
+  // When that happens, ask it explicitly to summarise its findings, and if that
+  // still comes back empty, synthesise a friendly summary from the tools it ran
+  // so the user is never left staring at a blank reply.
+  const ensureFinalText = async (text) => {
+    if (text && text.trim()) return text;
+    try {
+      const nudge = [...messages, { role: 'user', content: 'Now write your full final answer for the user — a clear, friendly, well-formatted summary of everything you found, with headers and sections as instructed. Do not call any more tools.' }];
+      const followUp = await callGroq(nudge, false);
+      const followUpMsg = followUp && followUp.choices && followUp.choices[0] && followUp.choices[0].message;
+      const followUpText = followUpMsg && followUpMsg.content || '';
+      if (followUpText.trim()) return followUpText;
+    } catch (_) {}
+
+    if (toolsUsed.length) {
+      const seen = new Set();
+      const lines = [];
+      for (const t of toolsUsed) {
+        if (seen.has(t.tool)) continue;
+        seen.add(t.tool);
+        lines.push('- ' + toolStatusText(t.tool, t.args).replace(/…$/, '.'));
+      }
+      return `Here's what I put together for you:\n\n${lines.join('\n')}\n\nTake a look at the results above — ask me to dig deeper into any part (flights, hotels, activities, tips) and I'll expand on it.`;
+    }
+    return "I wasn't able to put together a full answer that time — could you try asking again, maybe with a bit more detail about where and when you'd like to travel?";
+  };
+
   for (let iter = 0; iter < 12; iter++) {
     let data;
     try {
@@ -476,7 +514,7 @@ Today's date: ${today}${profileContext}`;
       if (e.code === 'tool_use_failed') {
         const fallback = await callGroq(messages, false);
         const fallbackMsg = fallback.choices[0].message;
-        const text = fallbackMsg.content || '';
+        const text = await ensureFinalText(fallbackMsg.content || '');
         await streamOutFinalAnswer(text);
         return { response: text, tools_used: toolsUsed, images };
       }
@@ -486,7 +524,7 @@ Today's date: ${today}${profileContext}`;
     const msg = data.choices[0].message;
 
     if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      const text = msg.content || '';
+      const text = await ensureFinalText(msg.content || '');
       await streamOutFinalAnswer(text);
       return { response: text, tools_used: toolsUsed, images };
     }
@@ -551,7 +589,7 @@ Today's date: ${today}${profileContext}`;
 
   // Max iterations reached — return last assistant content if any
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
-  const finalText = lastAssistant ? lastAssistant.content : 'Planning complete.';
+  const finalText = await ensureFinalText(lastAssistant ? lastAssistant.content : '');
   await streamOutFinalAnswer(finalText);
   return { response: finalText, tools_used: toolsUsed, images };
 }
