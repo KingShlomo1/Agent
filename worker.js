@@ -1576,6 +1576,18 @@ const HTML = `<!DOCTYPE html>
       display: flex;
       flex-direction: column;
       gap: 7px;
+      cursor: pointer;
+      transition: border-color 0.15s, transform 0.15s, background 0.15s;
+    }
+    .result-card:hover {
+      border-color: var(--accent-dim, #a8847a);
+      background: var(--bg-panel);
+      transform: translateY(-2px);
+    }
+    .result-card .rc-tap-hint {
+      font-size: 0.72rem;
+      color: var(--text-dim);
+      letter-spacing: 0.3px;
     }
     .result-card .rc-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
     .result-card .rc-title { font-weight: 600; color: var(--text-bright); font-size: 0.94rem; line-height: 1.3; }
@@ -2038,6 +2050,42 @@ const HTML = `<!DOCTYPE html>
       margin-top: 14px;
       justify-content: flex-end;
     }
+
+    /* ── Result detail popup (flights / hotels / activities) ── */
+    .modal.detail-modal { max-width: 560px; }
+    .detail-head {
+      display: flex; justify-content: space-between; align-items: flex-start; gap: 14px;
+      margin-bottom: 4px;
+    }
+    .detail-head h2 { font-size: 1.18rem; margin-bottom: 2px; }
+    .detail-price { font-weight: 700; color: var(--green); font-size: 1.1rem; white-space: nowrap; }
+    .detail-meta {
+      display: flex; flex-wrap: wrap; gap: 7px 14px;
+      font-size: 0.82rem; color: var(--text-muted); margin-bottom: 10px;
+    }
+    .detail-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+    .detail-note {
+      font-size: 0.88rem; color: var(--text-main); line-height: 1.6;
+      background: var(--bg-card); border: 1px solid var(--border);
+      border-radius: 10px; padding: 12px 14px; margin-bottom: 16px;
+    }
+    .detail-disclaimer {
+      font-size: 0.74rem; color: var(--text-dim); margin-bottom: 14px; line-height: 1.5;
+    }
+    .detail-section-label {
+      font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.6px;
+      color: var(--text-dim); margin-bottom: 8px; font-weight: 600;
+    }
+    .detail-links { display: flex; flex-direction: column; gap: 8px; margin-bottom: 6px; }
+    .detail-link {
+      display: flex; align-items: center; justify-content: space-between; gap: 10px;
+      background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+      padding: 11px 14px; text-decoration: none; color: var(--text-bright);
+      font-size: 0.86rem; font-weight: 600; transition: border-color 0.15s, background 0.15s;
+    }
+    .detail-link:hover { border-color: var(--accent); background: var(--bg-panel); }
+    .detail-link span.dl-sub { font-weight: 400; color: var(--text-muted); font-size: 0.76rem; }
+    .detail-link .dl-arrow { color: var(--accent); font-size: 1rem; }
 
     .mbtn {
       padding: 8px 18px;
@@ -2550,6 +2598,16 @@ const HTML = `<!DOCTYPE html>
     <div class="modal-actions">
       <button class="mbtn mbtn-secondary" onclick="closeAccountModal()">Cancel</button>
       <button class="mbtn mbtn-primary" onclick="createAccount()">Create account</button>
+    </div>
+  </div>
+</div>
+
+<!-- Result detail popup (flight / hotel / activity) -->
+<div class="modal-overlay" id="detail-modal" onclick="maybeCloseDetail(event)">
+  <div class="modal detail-modal">
+    <div id="detail-modal-body"></div>
+    <div class="modal-actions">
+      <button class="mbtn mbtn-secondary" onclick="closeDetailModal()">Close</button>
     </div>
   </div>
 </div>
@@ -3429,13 +3487,105 @@ const HTML = `<!DOCTYPE html>
         '<div class="rc-top"><div class="rc-title">' + escHtml(title) + '</div><div class="rc-price">' + escHtml(price) + '</div></div>' +
         (metaParts.length ? '<div class="rc-meta">' + metaParts.map(m => '<span>' + escHtml(m) + '</span>').join('') + '</div>' : '') +
         (tags.length ? '<div class="rc-tags">' + tags.map(t => '<span class="rc-tag">' + escHtml(t) + '</span>').join('') + '</div>' : '') +
-        (note ? '<div class="rc-note">' + escHtml(note) + '</div>' : '');
+        (note ? '<div class="rc-note">' + escHtml(note) + '</div>' : '') +
+        '<div class="rc-tap-hint">Tap for reviews, photos &amp; live prices &rarr;</div>';
+
+      card.addEventListener('click', () => openResultDetail(state.category, it, state.params, { title, price, metaParts, tags, note }));
 
       wrap.appendChild(card);
     });
 
     grid.appendChild(wrap);
   }
+
+  // ── Result detail popup: real reviews / photos / live prices via deep links ──
+  function buildReviewLinks(category, item, params) {
+    const links = [];
+    const gsearch = (q) => 'https://www.google.com/search?q=' + encodeURIComponent(q);
+
+    if (category === 'flights') {
+      const airline = item.airline || 'flight';
+      const route = (params.origin || '') + ' to ' + (params.destination || '');
+      links.push({
+        label: 'Search this flight on Google Flights',
+        sub: 'Live prices, schedules &amp; seat maps',
+        url: 'https://www.google.com/travel/flights?q=' + encodeURIComponent(airline + ' flights ' + route + ' ' + (params.departure_date || ''))
+      });
+      links.push({
+        label: 'Compare on Kayak',
+        sub: 'Live fares from multiple sites',
+        url: 'https://www.kayak.com/flights/' + encodeURIComponent(String(params.origin || '').toLowerCase()) + '-' + encodeURIComponent(String(params.destination || '').toLowerCase()) + '/' + (params.departure_date || '')
+      });
+      links.push({
+        label: 'Reviews of ' + airline,
+        sub: 'Real passenger reviews, photos &amp; ratings',
+        url: gsearch(airline + ' airline reviews seats photos ' + route)
+      });
+    } else if (category === 'hotels') {
+      const name = item.name || 'hotel';
+      const loc = params.location || '';
+      links.push({
+        label: 'Open ' + name + ' on Booking.com',
+        sub: 'Real guest reviews, photos &amp; live prices',
+        url: 'https://www.booking.com/searchresults.html?ss=' + encodeURIComponent(name + ', ' + loc) +
+             (params.checkin ? '&checkin=' + encodeURIComponent(params.checkin) : '') +
+             (params.checkout ? '&checkout=' + encodeURIComponent(params.checkout) : '')
+      });
+      links.push({
+        label: 'See it on Tripadvisor',
+        sub: 'Traveller photos, ratings &amp; reviews',
+        url: 'https://www.tripadvisor.com/Search?q=' + encodeURIComponent(name + ' ' + loc)
+      });
+      links.push({
+        label: 'Search Google for ' + name,
+        sub: 'Photos, reviews &amp; current prices across sites',
+        url: gsearch(name + ' ' + loc + ' hotel reviews photos prices')
+      });
+    } else if (category === 'activities') {
+      const name = item.name || 'activity';
+      const loc = params.location || '';
+      links.push({
+        label: 'Find ' + name + ' on Tripadvisor',
+        sub: 'Visitor photos, ratings &amp; reviews',
+        url: 'https://www.tripadvisor.com/Search?q=' + encodeURIComponent(name + ' ' + loc)
+      });
+      links.push({
+        label: 'Book tickets on Viator',
+        sub: 'Availability &amp; live prices',
+        url: 'https://www.viator.com/searchResults/all?text=' + encodeURIComponent(name + ' ' + loc)
+      });
+      links.push({
+        label: 'Search Google for ' + name,
+        sub: 'Photos, reviews &amp; details',
+        url: gsearch(name + ' ' + loc + ' reviews photos tickets')
+      });
+    }
+    return links;
+  }
+
+  function openResultDetail(category, item, params, display) {
+    const body = document.getElementById('detail-modal-body');
+    const links = buildReviewLinks(category, item, params || {});
+
+    body.innerHTML =
+      '<div class="detail-head"><div><h2>' + escHtml(display.title) + '</h2></div>' +
+        '<div class="detail-price">' + escHtml(display.price) + '</div></div>' +
+      (display.metaParts.length ? '<div class="detail-meta">' + display.metaParts.map(m => '<span>' + escHtml(m) + '</span>').join('') + '</div>' : '') +
+      (display.tags.length ? '<div class="detail-tags">' + display.tags.map(t => '<span class="rc-tag">' + escHtml(t) + '</span>').join('') + '</div>' : '') +
+      (display.note ? '<div class="detail-note">' + escHtml(display.note) + '</div>' : '') +
+      '<p class="detail-disclaimer">This card is an AI-generated planning estimate, not a live booking. Use the links below to see the real listing — actual reviews, photos and live prices straight from the source.</p>' +
+      '<div class="detail-section-label">See the real thing</div>' +
+      '<div class="detail-links">' +
+        links.map(l => '<a class="detail-link" href="' + escAttr(l.url) + '" target="_blank" rel="noopener noreferrer">' +
+          '<span>' + escHtml(l.label) + '<br><span class="dl-sub">' + l.sub + '</span></span>' +
+          '<span class="dl-arrow">&rarr;</span></a>').join('') +
+      '</div>';
+
+    document.getElementById('detail-modal').classList.add('open');
+  }
+
+  function closeDetailModal() { document.getElementById('detail-modal').classList.remove('open'); }
+  function maybeCloseDetail(e) { if (e.target === document.getElementById('detail-modal')) closeDetailModal(); }
 
   function applyBrowseFilters(page) {
     const maxPriceEl = document.getElementById(page + '-maxprice');
