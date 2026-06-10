@@ -39,9 +39,128 @@ async function fetchWithRetry(url, options = {}, { timeoutMs = 8000, retries = 2
   throw lastErr || new Error('Request failed');
 }
 
+// ─── Runtime configuration (env-driven, all optional) ─────────────────────────
+// Every integration below is feature-flagged by an env var / Worker secret and
+// falls back gracefully when unset, so the app runs with zero configuration.
+
+// Resolve the Groq key: a user-supplied key (from the request) takes priority;
+// otherwise fall back to the server's own key so visitors don't need their own.
+function resolveGroqKey(bodyKey, env = {}) {
+  if (bodyKey && bodyKey.startsWith('gsk_')) return { key: bodyKey, fromUser: true };
+  if (env.GROQ_API_KEY && String(env.GROQ_API_KEY).startsWith('gsk_')) return { key: env.GROQ_API_KEY, fromUser: false };
+  return { key: null, fromUser: false };
+}
+
+// Build the per-request tool config (search provider, photo provider, affiliate
+// IDs) from env. Unset providers leave the tools on their free fallbacks.
+function buildToolConfig(env = {}) {
+  const cfg = { search: { provider: null, key: null }, photo: { provider: null, key: null }, affiliates: {} };
+  if (env.BRAVE_API_KEY) cfg.search = { provider: 'brave', key: env.BRAVE_API_KEY };
+  else if (env.TAVILY_API_KEY) cfg.search = { provider: 'tavily', key: env.TAVILY_API_KEY };
+  if (env.UNSPLASH_ACCESS_KEY) cfg.photo = { provider: 'unsplash', key: env.UNSPLASH_ACCESS_KEY };
+  else if (env.PEXELS_API_KEY) cfg.photo = { provider: 'pexels', key: env.PEXELS_API_KEY };
+  cfg.affiliates = {
+    'booking.com': env.BOOKING_AID ? { param: 'aid', value: env.BOOKING_AID } : null,
+    'skyscanner.com': env.SKYSCANNER_AID ? { param: 'associateid', value: env.SKYSCANNER_AID } : null,
+    'hotels.com': env.HOTELS_AID ? { param: 'rffrid', value: env.HOTELS_AID } : null,
+    'viator.com': env.VIATOR_PID ? { param: 'pid', value: env.VIATOR_PID } : null,
+    'kayak.com': env.KAYAK_AID ? { param: 'a', value: env.KAYAK_AID } : null
+  };
+  return cfg;
+}
+
+// Append a configured affiliate parameter to a known booking domain's URL.
+function withAffiliate(url, cfg = {}) {
+  const aff = cfg.affiliates;
+  if (!aff || !url) return url;
+  try {
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    for (const domain of Object.keys(aff)) {
+      const conf = aff[domain];
+      if (conf && host.endsWith(domain)) { u.searchParams.set(conf.param, conf.value); return u.toString(); }
+    }
+  } catch (_) {}
+  return url;
+}
+
+// Per-IP rate limiting for requests that spend the server's own Groq key.
+// No-op unless a RATE_LIMIT_KV namespace is bound (so it degrades gracefully).
+async function checkRateLimit(env, request) {
+  const kv = env && env.RATE_LIMIT_KV;
+  if (!kv) return { ok: true };
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  const limit = parseInt(env.RATE_LIMIT_PER_HOUR || '40', 10);
+  const key = `rl:${ip}:${Math.floor(Date.now() / 3600000)}`;
+  const current = parseInt((await kv.get(key)) || '0', 10);
+  if (current >= limit) return { ok: false, limit };
+  await kv.put(key, String(current + 1), { expirationTtl: 3600 });
+  return { ok: true };
+}
+
+// Optional Sentry error reporting (minimal store-API call, no SDK). No-op
+// unless SENTRY_DSN is configured.
+async function reportError(env, ctx, err, where) {
+  const dsn = env && env.SENTRY_DSN;
+  if (!dsn) return;
+  try {
+    const m = /^https:\/\/([^@]+)@([^/]+)\/(.+)$/.exec(dsn);
+    if (!m) return;
+    const [, publicKey, host, projectId] = m;
+    const body = JSON.stringify({
+      event_id: (crypto.randomUUID ? crypto.randomUUID() : String(Date.now())).replace(/-/g, ''),
+      timestamp: new Date().toISOString(),
+      platform: 'javascript', level: 'error', logger: where || 'worker',
+      exception: { values: [{ type: (err && err.name) || 'Error', value: String((err && err.message) || err) }] }
+    });
+    const send = fetch(`https://${host}/api/${projectId}/store/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Sentry-Auth': `Sentry sentry_version=7, sentry_key=${publicKey}, sentry_client=familytrip/1.0` },
+      body
+    }).catch(() => {});
+    if (ctx && ctx.waitUntil) ctx.waitUntil(send); else await send;
+  } catch (_) {}
+}
+
 // ─── Tool implementations (all async, using fetch) ───────────────────────────
 
-async function toolWebSearch(query, maxResults = 5) {
+// Web search. Uses a real search API when one is configured (Brave or Tavily,
+// via cfg.search), which dramatically improves result quality; otherwise falls
+// back to the DuckDuckGo Instant Answer API. cfg comes from buildToolConfig(env).
+async function toolWebSearch(query, maxResults = 5, cfg = {}) {
+  const provider = cfg.search && cfg.search.provider;
+  try {
+    if (provider === 'brave' && cfg.search.key) {
+      const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${maxResults}`;
+      const res = await fetchWithRetry(url, {
+        headers: { 'Accept': 'application/json', 'X-Subscription-Token': cfg.search.key }
+      });
+      const data = await res.json();
+      const results = (data.web && data.web.results) || [];
+      if (results.length) {
+        return results.slice(0, maxResults).map(r =>
+          `**${r.title}**\n${r.description || ''}\n${r.url}`).join('\n\n');
+      }
+    } else if (provider === 'tavily' && cfg.search.key) {
+      const res = await fetchWithRetry('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ api_key: cfg.search.key, query, max_results: maxResults, search_depth: 'basic' })
+      });
+      const data = await res.json();
+      const results = data.results || [];
+      if (results.length) {
+        const parts = [];
+        if (data.answer) parts.push(data.answer);
+        for (const r of results.slice(0, maxResults)) parts.push(`**${r.title}**\n${r.content || ''}\n${r.url}`);
+        return parts.join('\n\n');
+      }
+    }
+  } catch (e) {
+    // Fall through to DuckDuckGo on any provider error.
+  }
+
+  // Fallback: DuckDuckGo Instant Answer API (no key required).
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
     const res = await fetchWithRetry(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
@@ -109,9 +228,9 @@ async function toolWeather(location, days = 7) {
   }
 }
 
-async function toolFlights(origin, destination, departureDate, returnDate = '', passengers = 1) {
+async function toolFlights(origin, destination, departureDate, returnDate = '', passengers = 1, cfg = {}) {
   const googleUrl = `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(origin)}+to+${encodeURIComponent(destination)}+${departureDate}`;
-  const skyscannerUrl = `https://www.skyscanner.com/transport/flights/${encodeURIComponent(origin.toLowerCase())}/${encodeURIComponent(destination.toLowerCase())}/${(departureDate || '').replace(/-/g, '')}`;
+  const skyscannerUrl = withAffiliate(`https://www.skyscanner.com/transport/flights/${encodeURIComponent(origin.toLowerCase())}/${encodeURIComponent(destination.toLowerCase())}/${(departureDate || '').replace(/-/g, '')}`, cfg);
   const kayakUrl = `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departureDate}${returnDate ? '/' + returnDate : ''}/${passengers}adults`;
 
   let result = `Flights: ${origin} to ${destination}\n`;
@@ -121,15 +240,15 @@ async function toolFlights(origin, destination, departureDate, returnDate = '', 
   result += `- Skyscanner: ${skyscannerUrl}\n`;
   result += `- Kayak: ${kayakUrl}\n\n`;
 
-  const searchResult = await toolWebSearch(`cheap flights ${origin} to ${destination} ${departureDate} ${passengers} passengers family`, 4);
+  const searchResult = await toolWebSearch(`cheap flights ${origin} to ${destination} ${departureDate} ${passengers} passengers family`, 4, cfg);
   result += `Search results:\n${searchResult}`;
   return result;
 }
 
-async function toolHotels(location, checkin, checkout, guests = 2, rooms = 1) {
-  const bookingUrl = `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`;
+async function toolHotels(location, checkin, checkout, guests = 2, rooms = 1, cfg = {}) {
+  const bookingUrl = withAffiliate(`https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`, cfg);
   const airbnbUrl = `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`;
-  const hotelsUrl = `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`;
+  const hotelsUrl = withAffiliate(`https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`, cfg);
 
   let result = `Hotels in ${location}\n`;
   result += `Check-in: ${checkin} | Check-out: ${checkout} | Guests: ${guests} | Rooms: ${rooms}\n\n`;
@@ -138,12 +257,41 @@ async function toolHotels(location, checkin, checkout, guests = 2, rooms = 1) {
   result += `- Airbnb: ${airbnbUrl}\n`;
   result += `- Hotels.com: ${hotelsUrl}\n\n`;
 
-  const searchResult = await toolWebSearch(`best family hotels ${location} kids amenities pool`, 4);
+  const searchResult = await toolWebSearch(`best family hotels ${location} kids amenities pool`, 4, cfg);
   result += `Search results:\n${searchResult}`;
   return result;
 }
 
-async function toolDestinationImage(location) {
+// Destination imagery. Uses a real photo (Unsplash/Pexels) when keyed, which is
+// faster and more credible than generation; otherwise falls back to Pollinations.
+async function toolDestinationImage(location, cfg = {}) {
+  const photo = cfg.photo || {};
+  try {
+    if (photo.provider === 'unsplash' && photo.key) {
+      const res = await fetchWithRetry(
+        `https://api.unsplash.com/search/photos?per_page=1&orientation=landscape&query=${encodeURIComponent(location + ' travel destination landscape')}`,
+        { headers: { 'Authorization': `Client-ID ${photo.key}` } }
+      );
+      const data = await res.json();
+      const hit = data.results && data.results[0];
+      if (hit && hit.urls && hit.urls.regular) {
+        return JSON.stringify({ image_url: hit.urls.regular, location, type: 'destination_image', credit: hit.user && hit.user.name });
+      }
+    } else if (photo.provider === 'pexels' && photo.key) {
+      const res = await fetchWithRetry(
+        `https://api.pexels.com/v1/search?per_page=1&orientation=landscape&query=${encodeURIComponent(location + ' travel destination landscape')}`,
+        { headers: { 'Authorization': photo.key } }
+      );
+      const data = await res.json();
+      const hit = data.photos && data.photos[0];
+      if (hit && hit.src && hit.src.large) {
+        return JSON.stringify({ image_url: hit.src.large, location, type: 'destination_image', credit: hit.photographer });
+      }
+    }
+  } catch (e) {
+    // Fall through to Pollinations on any provider error.
+  }
+
   const prompt = encodeURIComponent(`stunning travel destination ${location} beautiful landscape family vacation photorealistic golden hour`);
   const imageUrl = `https://image.pollinations.ai/prompt/${prompt}?width=900&height=450&nologo=true&seed=42`;
   return JSON.stringify({ image_url: imageUrl, location, type: 'destination_image' });
@@ -171,21 +319,21 @@ async function toolCurrency(from, to) {
   }
 }
 
-async function toolActivities(location, activityType = 'family', numResults = 6) {
-  return toolWebSearch(`best ${activityType} activities things to do ${location} kids children`, numResults);
+async function toolActivities(location, activityType = 'family', numResults = 6, cfg = {}) {
+  return toolWebSearch(`best ${activityType} activities things to do ${location} kids children`, numResults, cfg);
 }
 
-async function toolRestaurants(location, cuisine = '', familyFriendly = true) {
+async function toolRestaurants(location, cuisine = '', familyFriendly = true, cfg = {}) {
   const tag = familyFriendly ? 'family friendly' : 'best';
-  return toolWebSearch(`${tag} ${cuisine} restaurants ${location} kids children menu`, 6);
+  return toolWebSearch(`${tag} ${cuisine} restaurants ${location} kids children menu`, 6, cfg);
 }
 
-async function toolTips(destination, month = '') {
-  return toolWebSearch(`family travel tips ${destination} ${month} visa requirements safety kids packing`, 5);
+async function toolTips(destination, month = '', cfg = {}) {
+  return toolWebSearch(`family travel tips ${destination} ${month} visa requirements safety kids packing`, 5, cfg);
 }
 
-async function toolTransport(location) {
-  return toolWebSearch(`getting around ${location} public transport taxi family tips`, 4);
+async function toolTransport(location, cfg = {}) {
+  return toolWebSearch(`getting around ${location} public transport taxi family tips`, 4, cfg);
 }
 
 // ─── Tool definitions for Groq tool calling ──────────────────────────────────
@@ -350,16 +498,16 @@ const TOOLS_DEF = [
 ];
 
 const TOOL_MAP = {
-  web_search: (args) => toolWebSearch(args.query, args.max_results),
+  web_search: (args, cfg) => toolWebSearch(args.query, args.max_results, cfg),
   get_weather: (args) => toolWeather(args.location, args.days),
-  search_flights: (args) => toolFlights(args.origin, args.destination, args.departure_date, args.return_date, args.passengers),
-  search_hotels: (args) => toolHotels(args.location, args.checkin, args.checkout, args.guests, args.rooms),
-  destination_image: (args) => toolDestinationImage(args.location),
+  search_flights: (args, cfg) => toolFlights(args.origin, args.destination, args.departure_date, args.return_date, args.passengers, cfg),
+  search_hotels: (args, cfg) => toolHotels(args.location, args.checkin, args.checkout, args.guests, args.rooms, cfg),
+  destination_image: (args, cfg) => toolDestinationImage(args.location, cfg),
   currency_info: (args) => toolCurrency(args.from, args.to),
-  find_activities: (args) => toolActivities(args.location, args.activity_type, args.num_results),
-  find_restaurants: (args) => toolRestaurants(args.location, args.cuisine, args.family_friendly),
-  get_travel_tips: (args) => toolTips(args.destination, args.month),
-  find_local_transport: (args) => toolTransport(args.location)
+  find_activities: (args, cfg) => toolActivities(args.location, args.activity_type, args.num_results, cfg),
+  find_restaurants: (args, cfg) => toolRestaurants(args.location, args.cuisine, args.family_friendly, cfg),
+  get_travel_tips: (args, cfg) => toolTips(args.destination, args.month, cfg),
+  find_local_transport: (args, cfg) => toolTransport(args.location, cfg)
 };
 
 // ─── Agent runner ─────────────────────────────────────────────────────────────
@@ -383,7 +531,7 @@ function toolStatusText(fnName, args) {
   }
 }
 
-async function runAgent(userMessage, history, apiKey, profile, emit) {
+async function runAgent(userMessage, history, apiKey, profile, emit, cfg = {}) {
   const today = new Date().toISOString().split('T')[0];
 
   let profileContext = '';
@@ -587,7 +735,7 @@ Today's date: ${today}${profileContext}`;
       const fn = TOOL_MAP[fnName];
       if (fn) {
         try {
-          result = await fn(args);
+          result = await fn(args, cfg);
         } catch (e) {
           result = `Tool error: ${e.message}`;
         }
@@ -634,7 +782,7 @@ Today's date: ${today}${profileContext}`;
 
 // ─── Structured search (Trips / Prices / For Me browsing) ────────────────────
 
-async function runSearch(category, params, apiKey, profile) {
+async function runSearch(category, params, apiKey, profile, cfg = {}) {
   const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
   const askForJSON = async (prompt) => {
@@ -726,6 +874,9 @@ Reply with ONLY this JSON shape:
   } catch (_) {
     items = [];
   }
+
+  // Append any configured affiliate IDs to known booking domains.
+  for (const k of Object.keys(links)) links[k] = withAffiliate(links[k], cfg);
 
   return { category, items, links, params };
 }
@@ -3689,12 +3840,9 @@ const HTML = `<!DOCTYPE html>
     const text = inputEl.value.trim();
     if (!text) return;
 
+    // No local key required — the server may have its own. We only prompt for a
+    // key if the server responds that one is missing.
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) {
-      showToast('Add your free Groq API key to start chatting — takes under a minute.');
-      openSettings();
-      return;
-    }
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
@@ -3721,7 +3869,12 @@ const HTML = `<!DOCTYPE html>
         let data = {};
         try { data = await res.json(); } catch (_) {}
         settleThinking(thinking);
-        content.innerHTML = mdParse('**' + escHtml(data.detail || data.error || 'Server error') + '**');
+        const errMsg = data.detail || data.error || 'Server error';
+        content.innerHTML = mdParse('**' + escHtml(errMsg) + '**');
+        if (/Groq API key/i.test(errMsg)) {
+          showToast('Add your free Groq API key to start chatting — takes under a minute.');
+          openSettings();
+        }
         sendBtn.disabled = false;
         inputEl.focus();
         return;
@@ -4051,12 +4204,7 @@ const HTML = `<!DOCTYPE html>
   async function submitSearch(evt, page, category) {
     evt.preventDefault();
     const form = evt.target;
-    const key = getKey();
-    if (!key || !key.startsWith('gsk_')) {
-      showToast('Add your free Groq API key first — Settings → paste your key.');
-      openSettings();
-      return false;
-    }
+    const key = getKey(); // optional — server may supply its own key
 
     const params = {};
     new FormData(form).forEach((v, k) => { params[k] = v; });
@@ -4085,6 +4233,7 @@ const HTML = `<!DOCTYPE html>
 
       if (!res.ok) {
         grid.innerHTML = '<div class="browse-error">' + escHtml(data.error || 'Search failed.') + '</div>';
+        if (/Groq API key/i.test(data.error || '')) { showToast('Add your free Groq API key in Settings.'); openSettings(); }
       } else {
         browseState[page].category = category;
         browseState[page].items = data.items || [];
@@ -4160,12 +4309,7 @@ const HTML = `<!DOCTYPE html>
 
   // ── For Me — personalised recommendations ────────────────────────────────
   async function loadRecommendations() {
-    const key = getKey();
-    if (!key || !key.startsWith('gsk_')) {
-      showToast('Add your free Groq API key first — Settings → paste your key.');
-      openSettings();
-      return;
-    }
+    const key = getKey(); // optional — server may supply its own key
 
     const btn = document.getElementById('forme-btn');
     const grid = document.getElementById('forme-results');
@@ -4183,6 +4327,7 @@ const HTML = `<!DOCTYPE html>
 
       if (!res.ok) {
         grid.innerHTML = '<div class="browse-error">' + escHtml(data.error || 'Could not load recommendations.') + '</div>';
+        if (/Groq API key/i.test(data.error || '')) { showToast('Add your free Groq API key in Settings.'); openSettings(); }
       } else {
         const items = data.items || [];
         if (!items.length) {
@@ -4375,7 +4520,8 @@ export default {
 
       const { message, history = [], api_key, user_profile } = body;
 
-      if (!api_key || !api_key.startsWith('gsk_')) {
+      const { key: groqKey, fromUser } = resolveGroqKey(api_key, env);
+      if (!groqKey) {
         return new Response(
           JSON.stringify({ error: 'Invalid or missing Groq API key. Get a free key at console.groq.com and paste it in settings.' }),
           { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
@@ -4389,6 +4535,20 @@ export default {
         );
       }
 
+      // Rate-limit only when spending the server's own key (BYO-key users are
+      // billed against their own quota, so they're not limited here).
+      if (!fromUser) {
+        const rl = await checkRateLimit(env, request);
+        if (!rl.ok) {
+          return new Response(
+            JSON.stringify({ error: `Rate limit reached (${rl.limit}/hour). Add your own free Groq key in settings to continue without limits.` }),
+            { status: 429, headers: { ...CORS, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
+      const toolCfg = buildToolConfig(env);
+
       // Stream the agent's progress (tool "thoughts" + the final answer,
       // word by word) to the client as newline-delimited JSON so the chat
       // can render it ChatGPT-style instead of waiting on one big response.
@@ -4401,10 +4561,11 @@ export default {
 
       const run = (async () => {
         try {
-          const result = await runAgent(message.trim(), history, api_key, user_profile || null, emit);
+          const result = await runAgent(message.trim(), history, groqKey, user_profile || null, emit, toolCfg);
           await emit({ type: 'done', tools_used: result.tools_used, images: result.images, response: result.response });
         } catch (err) {
           console.error('Agent error:', err);
+          await reportError(env, ctx, err, 'chat');
           await emit({ type: 'error', error: err.message || 'Internal server error' });
         } finally {
           try { await writer.close(); } catch (_) {}
@@ -4434,7 +4595,8 @@ export default {
       const { category, params = {}, api_key, user_profile } = body;
       const validCategories = ['flights', 'hotels', 'activities', 'recommendations'];
 
-      if (!api_key || !api_key.startsWith('gsk_')) {
+      const { key: groqKey, fromUser } = resolveGroqKey(api_key, env);
+      if (!groqKey) {
         return new Response(
           JSON.stringify({ error: 'Invalid or missing Groq API key. Get a free key at console.groq.com and paste it in settings.' }),
           { status: 400, headers: { ...CORS, 'Content-Type': 'application/json' } }
@@ -4448,14 +4610,25 @@ export default {
         );
       }
 
+      if (!fromUser) {
+        const rl = await checkRateLimit(env, request);
+        if (!rl.ok) {
+          return new Response(
+            JSON.stringify({ error: `Rate limit reached (${rl.limit}/hour). Add your own free Groq key in settings to continue without limits.` }),
+            { status: 429, headers: { ...CORS, 'Content-Type': 'application/json' } }
+          );
+        }
+      }
+
       try {
-        const result = await runSearch(category, params, api_key, user_profile || null);
+        const result = await runSearch(category, params, groqKey, user_profile || null, buildToolConfig(env));
         return new Response(JSON.stringify(result), {
           status: 200,
           headers: { ...CORS, 'Content-Type': 'application/json' }
         });
       } catch (err) {
         console.error('Search error:', err);
+        await reportError(env, ctx, err, 'search');
         return new Response(
           JSON.stringify({ error: err.message || 'Internal server error' }),
           { status: 500, headers: { ...CORS, 'Content-Type': 'application/json' } }

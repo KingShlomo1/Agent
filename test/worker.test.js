@@ -10,12 +10,12 @@ const env = {};
 function get(path) {
   return worker.fetch(new Request('https://example.com' + path), env, ctx);
 }
-function post(path, body, { raw = false } = {}) {
+function post(path, body, { raw = false, env: e = env } = {}) {
   return worker.fetch(new Request('https://example.com' + path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: raw ? body : JSON.stringify(body)
-  }), env, ctx);
+  }), e, ctx);
 }
 
 test('GET / serves the SPA HTML', async () => {
@@ -81,6 +81,35 @@ test('POST /search rejects an invalid category', async () => {
   const res = await post('/search', { category: 'bogus', api_key: 'gsk_test' });
   assert.equal(res.status, 400);
   assert.match((await res.json()).error, /Invalid category/);
+});
+
+test('a server-side GROQ_API_KEY satisfies the key check (no user key needed)', async () => {
+  // With a server key set, the request gets past key validation; an empty
+  // message then trips the message check — proving the env fallback resolved.
+  const res = await post('/chat', { message: '   ' }, { env: { GROQ_API_KEY: 'gsk_serverkey' } });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Message is required/);
+});
+
+test('rate limiting returns 429 when the KV counter is over the limit', async () => {
+  const stubKv = { get: async () => '999', put: async () => {} };
+  const res = await post('/chat',
+    { message: 'plan a trip' },
+    { env: { GROQ_API_KEY: 'gsk_serverkey', RATE_LIMIT_KV: stubKv, RATE_LIMIT_PER_HOUR: '40' } });
+  assert.equal(res.status, 429);
+  assert.match((await res.json()).error, /Rate limit/);
+});
+
+test('a user-supplied key bypasses rate limiting', async () => {
+  // BYO-key requests are billed to the user, so the limiter must not apply.
+  // With a real-looking key + empty message we expect the message check (400),
+  // never the 429 path.
+  const stubKv = { get: async () => '999', put: async () => {} };
+  const res = await post('/chat',
+    { message: '  ', api_key: 'gsk_userkey' },
+    { env: { RATE_LIMIT_KV: stubKv } });
+  assert.equal(res.status, 400);
+  assert.match((await res.json()).error, /Message is required/);
 });
 
 test('unknown route returns 404', async () => {

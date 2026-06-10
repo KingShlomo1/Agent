@@ -2,3 +2,38 @@ name = "family-trip-ai"
 main = "worker.js"
 compatibility_date = "2024-09-23"
 workers_dev = true
+
+# ─── Optional configuration ───────────────────────────────────────────────────
+# Everything below is optional. With none of it set, the app still runs:
+# visitors supply their own Groq key, search falls back to DuckDuckGo, images to
+# Pollinations, and there is no rate limiting / affiliate / error reporting.
+
+# Server-side Groq key (so visitors don't need their own). Set as a SECRET:
+#   wrangler secret put GROQ_API_KEY
+#
+# Real web search (pick one) — set as a secret:
+#   wrangler secret put BRAVE_API_KEY      # https://brave.com/search/api/
+#   wrangler secret put TAVILY_API_KEY     # https://tavily.com
+#
+# Real destination photos (pick one) — set as a secret:
+#   wrangler secret put UNSPLASH_ACCESS_KEY   # https://unsplash.com/developers
+#   wrangler secret put PEXELS_API_KEY        # https://www.pexels.com/api/
+#
+# Optional Sentry error reporting — set as a secret:
+#   wrangler secret put SENTRY_DSN
+
+# Affiliate IDs appended to booking links (non-secret, safe as plain vars):
+# [vars]
+# BOOKING_AID = ""        # Booking.com affiliate id (?aid=)
+# SKYSCANNER_AID = ""     # Skyscanner associate id (?associateid=)
+# HOTELS_AID = ""         # Hotels.com referral id (?rffrid=)
+# VIATOR_PID = ""         # Viator partner id (?pid=)
+# KAYAK_AID = ""          # Kayak affiliate id (?a=)
+# RATE_LIMIT_PER_HOUR = "40"   # requests/hour per IP when using the server key
+
+# Per-IP rate limiting (only active when this KV namespace is bound). Create with:
+#   wrangler kv namespace create RATE_LIMIT_KV
+# then paste the returned id below and uncomment:
+# [[kv_namespaces]]
+# binding = "RATE_LIMIT_KV"
+# id = "<your-kv-namespace-id>"

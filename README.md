@@ -30,8 +30,21 @@ wrangler deploy          # uses wrangler.toml (main = worker.js)
 
 ## Configuration
 
-- **Groq API key** — currently supplied by the client (stored in `localStorage`)
-  and sent with each request. Get a free key at https://console.groq.com.
+All configuration is optional — with nothing set, visitors supply their own
+Groq key, web search falls back to DuckDuckGo, images to Pollinations, and there
+is no rate limiting/affiliate/error reporting. See `wrangler.toml` for the full
+list and the exact `wrangler secret put` / `wrangler kv` commands.
+
+- **Groq API key** — set `GROQ_API_KEY` as a Worker secret to let visitors use
+  the app without their own key. A user-supplied key (stored in their
+  `localStorage`) still takes priority and bypasses rate limiting.
+- **Rate limiting** — per-IP, active only when a `RATE_LIMIT_KV` namespace is
+  bound; applies only to requests that spend the server's key.
+- **Real web search** — set `BRAVE_API_KEY` or `TAVILY_API_KEY`.
+- **Real photos** — set `UNSPLASH_ACCESS_KEY` or `PEXELS_API_KEY`.
+- **Affiliate links** — set `BOOKING_AID`, `SKYSCANNER_AID`, `HOTELS_AID`,
+  `VIATOR_PID`, `KAYAK_AID` as vars.
+- **Error reporting** — set `SENTRY_DSN`.
 - Model selection is centralised in the `CHAT_MODEL` / `SEARCH_MODEL` constants
   at the top of `worker.js`.
 
