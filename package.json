@@ -1,0 +1,12 @@
+{
+  "name": "familytripai",
+  "version": "1.0.0",
+  "description": "AI family-travel planning assistant (Cloudflare Worker).",
+  "type": "module",
+  "main": "worker.js",
+  "scripts": {
+    "check": "node --check worker.js",
+    "test": "node --test"
+  },
+  "license": "MIT"
+}
