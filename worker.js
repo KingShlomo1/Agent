@@ -741,6 +741,8 @@ const HTML = `<!DOCTYPE html>
   <meta name="theme-color" content="#2b2924" />
   <meta name="description" content="AI family-travel planner — flights, hotels, weather, activities and a day-by-day itinerary in one chat." />
   <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""><\/script>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"><\/script>
   <script src="https://cdn.jsdelivr.net/npm/globe.gl"><\/script>
@@ -1646,6 +1648,9 @@ const HTML = `<!DOCTYPE html>
     .export-btn:hover { border-color: var(--accent); color: var(--text-bright); background: rgba(201,123,95,0.08); }
     .export-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+    .detail-map { height: 220px; width: 100%; border-radius: 12px; margin-top: 10px; overflow: hidden; background: var(--bg-dark); }
+    .detail-map .leaflet-control-attribution { font-size: 9px; }
+
     .booking-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
     .booking-links a {
       font-size: 0.78rem;
@@ -1773,6 +1778,13 @@ const HTML = `<!DOCTYPE html>
       cursor: pointer;
     }
     .price-tool-card button:hover { background: var(--accent-dim); }
+    .budget-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-bottom: 12px; }
+    .budget-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.78rem; color: var(--text-muted); }
+    .budget-grid input, .budget-grid select {
+      font-family: inherit; font-size: 0.85rem; color: var(--text-main);
+      background: var(--bg-dark); border: 1px solid var(--border);
+      border-radius: 8px; padding: 7px 9px; width: 100%;
+    }
     .price-tool-result { margin-top: 12px; font-size: 0.84rem; color: var(--text-main); line-height: 1.6; }
     .price-tool-result .pt-rate { color: var(--green); font-weight: 700; }
 
@@ -2706,6 +2718,26 @@ const HTML = `<!DOCTYPE html>
               <button onclick="convertCurrency()">Convert</button>
             </div>
             <div class="price-tool-result" id="price-curr-result"></div>
+          </div>
+
+          <div class="price-tool-card">
+            <h3>Trip budget estimator</h3>
+            <div class="budget-grid">
+              <label>Travellers<input id="bud-people" type="number" min="1" value="4" /></label>
+              <label>Nights<input id="bud-nights" type="number" min="1" value="7" /></label>
+              <label>Flights / person<input id="bud-flight" type="number" min="0" value="450" /></label>
+              <label>Hotel / night<input id="bud-hotel" type="number" min="0" value="180" /></label>
+              <label>Activities / person / day<input id="bud-activities" type="number" min="0" value="35" /></label>
+              <label>Food / person / day<input id="bud-food" type="number" min="0" value="45" /></label>
+              <label>Show in
+                <select id="bud-currency">
+                  <option>USD</option><option>EUR</option><option>GBP</option><option>ILS</option>
+                  <option>JPY</option><option>AUD</option><option>CAD</option><option>THB</option>
+                </select>
+              </label>
+            </div>
+            <button onclick="estimateBudget()">Estimate total</button>
+            <div class="price-tool-result" id="price-bud-result"></div>
           </div>
         </div>
 
@@ -3968,12 +4000,45 @@ const HTML = `<!DOCTYPE html>
         links.map(l => '<a class="detail-link" href="' + escAttr(l.url) + '" target="_blank" rel="noopener noreferrer">' +
           '<span>' + escHtml(l.label) + '<br><span class="dl-sub">' + l.sub + '</span></span>' +
           '<span class="dl-arrow">&rarr;</span></a>').join('') +
-      '</div>';
+      '</div>' +
+      '<div class="detail-section-label">Where it is</div>' +
+      '<div id="detail-map" class="detail-map" role="img" aria-label="Map of the destination"></div>';
 
     document.getElementById('detail-modal').classList.add('open');
+
+    // Geocode the destination and drop a Leaflet map under the listing. Best
+    // effort — if geocoding or the map library fails, just hide the map area.
+    const place = [ (category === 'hotels' || category === 'activities') ? (item.name || '') : '', params && params.location ? params.location : '' ]
+      .filter(Boolean).join(', ');
+    initDetailMap(place);
   }
 
-  function closeDetailModal() { document.getElementById('detail-modal').classList.remove('open'); }
+  let detailMap = null;
+  async function initDetailMap(place) {
+    const el = document.getElementById('detail-map');
+    if (!el) return;
+    if (typeof L === 'undefined' || !place) { el.style.display = 'none'; return; }
+    try {
+      const res = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&q=' + encodeURIComponent(place));
+      const data = await res.json();
+      if (!data || !data.length) { el.style.display = 'none'; return; }
+      const lat = parseFloat(data[0].lat), lon = parseFloat(data[0].lon);
+      if (detailMap) { try { detailMap.remove(); } catch (_) {} detailMap = null; }
+      detailMap = L.map(el, { scrollWheelZoom: false, attributionControl: true }).setView([lat, lon], 12);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(detailMap);
+      L.marker([lat, lon]).addTo(detailMap).bindPopup(place);
+      setTimeout(() => { try { detailMap.invalidateSize(); } catch (_) {} }, 200);
+    } catch (_) {
+      el.style.display = 'none';
+    }
+  }
+
+  function closeDetailModal() {
+    document.getElementById('detail-modal').classList.remove('open');
+    if (detailMap) { try { detailMap.remove(); } catch (_) {} detailMap = null; }
+  }
   function maybeCloseDetail(e) { if (e.target === document.getElementById('detail-modal')) closeDetailModal(); }
 
   function applyBrowseFilters(page) {
@@ -4058,6 +4123,39 @@ const HTML = `<!DOCTYPE html>
     } catch (err) {
       out.textContent = 'Currency error: ' + err.message;
     }
+  }
+
+  // Rough all-in trip cost: flights (per person) + hotel (per night) +
+  // activities & food (per person per day). Totals are shown in USD and,
+  // if a different currency is chosen, converted using live rates.
+  async function estimateBudget() {
+    const num = (id) => parseFloat(document.getElementById(id).value) || 0;
+    const people = Math.max(1, num('bud-people'));
+    const nights = Math.max(1, num('bud-nights'));
+    const days = nights + 1;
+    const flights = num('bud-flight') * people;
+    const hotel = num('bud-hotel') * nights;
+    const activities = num('bud-activities') * people * days;
+    const food = num('bud-food') * people * days;
+    const totalUsd = flights + hotel + activities + food;
+    const out = document.getElementById('price-bud-result');
+    const fmt = (n) => n.toLocaleString(undefined, { maximumFractionDigits: 0 });
+
+    let line = '<strong>Estimated total: <span class="pt-rate">$' + fmt(totalUsd) + ' USD</span></strong>';
+    const cur = document.getElementById('bud-currency').value;
+    if (cur && cur !== 'USD') {
+      out.innerHTML = line + ' &middot; converting…';
+      try {
+        const rates = await fetchRates('USD');
+        const rate = rates[cur];
+        if (rate) line += ' &middot; <span class="pt-rate">' + fmt(totalUsd * rate) + ' ' + cur + '</span>';
+      } catch (_) {}
+    }
+    line += '<div style="margin-top:8px;color:var(--text-muted);font-size:0.8rem;">'
+      + 'Flights $' + fmt(flights) + ' &middot; Hotel $' + fmt(hotel)
+      + ' &middot; Activities $' + fmt(activities) + ' &middot; Food $' + fmt(food)
+      + '<br>For ' + people + ' traveller(s), ' + nights + ' night(s). Rough planning estimate.</div>';
+    out.innerHTML = line;
   }
 
   // ── For Me — personalised recommendations ────────────────────────────────
