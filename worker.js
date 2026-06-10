@@ -738,6 +738,9 @@ const HTML = `<!DOCTYPE html>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FamilyTripAI</title>
+  <meta name="theme-color" content="#2b2924" />
+  <meta name="description" content="AI family-travel planner — flights, hotels, weather, activities and a day-by-day itinerary in one chat." />
+  <link rel="manifest" href="/manifest.webmanifest" />
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"><\/script>
   <script src="https://cdn.jsdelivr.net/npm/globe.gl"><\/script>
@@ -1628,6 +1631,21 @@ const HTML = `<!DOCTYPE html>
       margin: -8px 0 12px;
       font-style: italic;
     }
+    /* Itinerary export controls shown under a completed plan */
+    .export-bar {
+      display: flex; flex-wrap: wrap; gap: 8px;
+      margin-top: 14px; padding-top: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .export-btn {
+      font-family: inherit; font-size: 0.78rem; cursor: pointer;
+      color: var(--text-main); background: transparent;
+      border: 1px solid var(--border); border-radius: 20px;
+      padding: 6px 14px; transition: border-color 0.15s, background 0.15s, color 0.15s;
+    }
+    .export-btn:hover { border-color: var(--accent); color: var(--text-bright); background: rgba(201,123,95,0.08); }
+    .export-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
     .booking-links { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 18px; }
     .booking-links a {
       font-size: 0.78rem;
@@ -2567,7 +2585,7 @@ const HTML = `<!DOCTYPE html>
   <!-- TAB: Chat -->
   <div class="tab-panel" id="tab-chat" data-tab="chat">
     <div class="chat-body">
-      <div id="messages">
+      <div id="messages" role="log" aria-live="polite" aria-label="Conversation with FamilyTripAI">
         <div class="welcome" id="welcome">
           <div class="welcome-logo">
             <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.8"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
@@ -2579,15 +2597,15 @@ const HTML = `<!DOCTYPE html>
       </div>
 
       <div class="input-area">
-        <div class="suggestions">
-          <span class="suggestion" onclick="fill(this)">Week in Paris, 2 adults 2 kids</span>
-          <span class="suggestion" onclick="fill(this)">5 days in Bali from London, July 2026</span>
-          <span class="suggestion" onclick="fill(this)">Thailand 4 weeks, 7 people, kosher, kids 5-15</span>
-          <span class="suggestion" onclick="fill(this)">Japan family trip with toddlers, September</span>
+        <div class="suggestions" role="list" aria-label="Example trips">
+          <span class="suggestion" role="button" tabindex="0" onclick="fill(this)">Week in Paris, 2 adults 2 kids</span>
+          <span class="suggestion" role="button" tabindex="0" onclick="fill(this)">5 days in Bali from London, July 2026</span>
+          <span class="suggestion" role="button" tabindex="0" onclick="fill(this)">Thailand 4 weeks, 7 people, kosher, kids 5-15</span>
+          <span class="suggestion" role="button" tabindex="0" onclick="fill(this)">Japan family trip with toddlers, September</span>
         </div>
         <div class="input-row">
-          <textarea id="user-input" rows="1" placeholder="Describe your trip — destination, dates, family size..."></textarea>
-          <button id="send-btn" onclick="send()">
+          <textarea id="user-input" rows="1" aria-label="Describe your trip" placeholder="Describe your trip — destination, dates, family size..."></textarea>
+          <button id="send-btn" aria-label="Send message" onclick="send()">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
           </button>
         </div>
@@ -2772,8 +2790,8 @@ const HTML = `<!DOCTYPE html>
 
 <!-- Settings modal -->
 <div class="modal-overlay" id="modal" onclick="maybeClose(event)">
-  <div class="modal">
-    <h2>Add your free Groq API key</h2>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <h2 id="modal-title">Add your free Groq API key</h2>
     <p>
       The AI planner runs on Groq's free LLM API — it takes about a minute to set up and never asks for a credit card:
     </p>
@@ -2826,6 +2844,13 @@ const HTML = `<!DOCTYPE html>
 
 <script>
   if (typeof marked !== 'undefined' && marked.setOptions) marked.setOptions({ breaks: true });
+
+  // Register the service worker for installability + an offline app shell.
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    });
+  }
 
   // Model output (and any web-search text it echoes back) is untrusted, so the
   // rendered HTML is always run through DOMPurify before it touches innerHTML.
@@ -3385,11 +3410,25 @@ const HTML = `<!DOCTYPE html>
   function openSettings() {
     document.getElementById('key-input').value = getKey();
     document.getElementById('modal').classList.add('open');
+    setTimeout(() => { try { document.getElementById('key-input').focus(); } catch (_) {} }, 50);
   }
 
   function closeSettings() { document.getElementById('modal').classList.remove('open'); }
 
   function maybeClose(e) { if (e.target === document.getElementById('modal')) closeSettings(); }
+
+  // ── Keyboard accessibility ───────────────────────────────────────────────
+  // ESC closes any open modal; Enter/Space activates the role="button" spans
+  // (suggestion chips) so the app is fully operable without a mouse.
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+    }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target && e.target.getAttribute && e.target.getAttribute('role') === 'button' && e.target.tagName === 'SPAN') {
+      e.preventDefault();
+      e.target.click();
+    }
+  });
 
   function saveKey() {
     const val = document.getElementById('key-input').value.trim();
@@ -3542,6 +3581,76 @@ const HTML = `<!DOCTYPE html>
     bubble.appendChild(row);
   }
 
+  // ── Itinerary export ───────────────────────────────────────────────────────
+  // Once a substantial plan has been produced, offer the user a way to take it
+  // with them: print / save as PDF, copy, or download a calendar (.ics) note.
+  function addExportBar(bubble, raw) {
+    if (!raw || raw.length < 200 || bubble.querySelector('.export-bar')) return;
+    const bar = document.createElement('div');
+    bar.className = 'export-bar';
+    bar.setAttribute('role', 'group');
+    bar.setAttribute('aria-label', 'Export this itinerary');
+
+    const mk = (label, aria, fn) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'export-btn';
+      b.textContent = label;
+      b.setAttribute('aria-label', aria);
+      b.addEventListener('click', fn);
+      return b;
+    };
+
+    bar.appendChild(mk('🖨 Print / PDF', 'Print or save this itinerary as a PDF', () => printPlan(raw)));
+    bar.appendChild(mk('📋 Copy', 'Copy this itinerary to the clipboard', (e) => copyPlan(raw, e.currentTarget)));
+    bar.appendChild(mk('📅 Calendar', 'Download this itinerary as a calendar file', () => downloadIcs(raw)));
+    bubble.appendChild(bar);
+  }
+
+  function printPlan(raw) {
+    const w = window.open('', '_blank');
+    if (!w) { showToast('Allow pop-ups to print your itinerary.'); return; }
+    const body = mdParse(raw); // already sanitized
+    w.document.write(
+      '<!DOCTYPE html><html><head><meta charset="utf-8"><title>FamilyTripAI Itinerary<\\/title>' +
+      '<style>body{font-family:Georgia,serif;max-width:780px;margin:40px auto;padding:0 24px;color:#222;line-height:1.6}' +
+      'h1,h2,h3{font-family:Helvetica,Arial,sans-serif;color:#111}h1{border-bottom:2px solid #c97b5f;padding-bottom:8px}' +
+      'a{color:#a65a3f}img{max-width:100%;border-radius:8px}.brand{color:#c97b5f;font-size:13px;letter-spacing:1px}<\\/style>' +
+      '<\\/head><body><p class="brand">FAMILYTRIPAI<\\/p>' + body + '<\\/body><\\/html>'
+    );
+    w.document.close();
+    w.focus();
+    setTimeout(() => { try { w.print(); } catch (_) {} }, 350);
+  }
+
+  async function copyPlan(raw, btn) {
+    try {
+      await navigator.clipboard.writeText(raw);
+      if (btn) { const o = btn.textContent; btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = o; }, 1500); }
+    } catch (_) {
+      showToast('Could not copy — your browser blocked clipboard access.');
+    }
+  }
+
+  function downloadIcs(raw) {
+    const dt = new Date();
+    const stamp = dt.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    const day = dt.toISOString().slice(0, 10).replace(/-/g, '');
+    const esc = (s) => String(s).replace(/\\\\/g, '\\\\\\\\').replace(/\\n/g, '\\\\n').replace(/,/g, '\\\\,').replace(/;/g, '\\\\;');
+    const ics = [
+      'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//FamilyTripAI//EN', 'BEGIN:VEVENT',
+      'UID:' + Date.now() + '@familytripai', 'DTSTAMP:' + stamp,
+      'DTSTART;VALUE=DATE:' + day, 'SUMMARY:FamilyTripAI Itinerary',
+      'DESCRIPTION:' + esc(raw), 'END:VEVENT', 'END:VCALENDAR'
+    ].join('\\r\\n');
+    const blob = new Blob([ics], { type: 'text/calendar' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'familytrip-itinerary.ics';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
   function scroll() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
   async function send() {
@@ -3627,6 +3736,7 @@ const HTML = `<!DOCTYPE html>
       content.innerHTML = mdParse(raw || '');
       if (images && images.length) addImageToBubble(bubble, images[0]);
       addToolTags(bubble, toolsUsed);
+      addExportBar(bubble, raw || '');
 
       history.push({ role: 'user', content: text });
       history.push({ role: 'assistant', content: raw });
@@ -4045,6 +4155,62 @@ const HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+// ─── PWA assets (manifest, service worker, icon) ──────────────────────────────
+
+const ICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="96" fill="#2b2924"/>
+  <g transform="translate(256,256) scale(13.5) translate(-12,-12)" fill="none" stroke="#c97b5f" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/>
+  </g>
+</svg>`;
+
+const MANIFEST = {
+  name: 'FamilyTripAI',
+  short_name: 'FamilyTrip',
+  description: 'AI family-travel planner — flights, hotels, weather, activities and a day-by-day itinerary in one chat.',
+  start_url: '/',
+  scope: '/',
+  display: 'standalone',
+  background_color: '#2b2924',
+  theme_color: '#2b2924',
+  icons: [
+    { src: '/icon.svg', sizes: 'any', type: 'image/svg+xml', purpose: 'any maskable' }
+  ]
+};
+
+// Offline app shell: cache the shell + CDN libs on install, serve the cached
+// page when a navigation fails (offline). API calls (/chat, /search) are always
+// network-only — never cache POST or dynamic responses.
+const SERVICE_WORKER = `
+const CACHE = 'familytrip-v1';
+const SHELL = [
+  '/',
+  'https://cdn.jsdelivr.net/npm/marked/marked.min.js',
+  'https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js'
+];
+self.addEventListener('install', (e) => {
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL).catch(() => {})).then(() => self.skipWaiting()));
+});
+self.addEventListener('activate', (e) => {
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+});
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.method !== 'GET') return; // never cache /chat or /search
+  if (req.mode === 'navigate') {
+    e.respondWith(fetch(req).catch(() => caches.match('/')));
+    return;
+  }
+  e.respondWith(caches.match(req).then((hit) => hit || fetch(req).then((res) => {
+    if (res && res.ok && (req.url.startsWith(self.location.origin) || req.url.includes('cdn.jsdelivr.net'))) {
+      const copy = res.clone();
+      caches.open(CACHE).then((c) => c.put(req, copy));
+    }
+    return res;
+  }).catch(() => hit)));
+});
+`;
+
 // ─── CORS headers ─────────────────────────────────────────────────────────────
 
 const CORS = {
@@ -4070,6 +4236,30 @@ export default {
       return new Response(HTML, {
         status: 200,
         headers: { ...CORS, 'Content-Type': 'text/html;charset=UTF-8' }
+      });
+    }
+
+    // PWA: web app manifest
+    if (method === 'GET' && url.pathname === '/manifest.webmanifest') {
+      return new Response(JSON.stringify(MANIFEST), {
+        status: 200,
+        headers: { ...CORS, 'Content-Type': 'application/manifest+json', 'Cache-Control': 'public, max-age=86400' }
+      });
+    }
+
+    // PWA: service worker (offline app shell)
+    if (method === 'GET' && url.pathname === '/sw.js') {
+      return new Response(SERVICE_WORKER, {
+        status: 200,
+        headers: { ...CORS, 'Content-Type': 'text/javascript;charset=UTF-8', 'Cache-Control': 'no-cache' }
+      });
+    }
+
+    // PWA / favicon: app icon
+    if (method === 'GET' && (url.pathname === '/icon.svg' || url.pathname === '/favicon.ico')) {
+      return new Response(ICON_SVG, {
+        status: 200,
+        headers: { ...CORS, 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=604800' }
       });
     }
 
