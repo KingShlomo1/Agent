@@ -1,12 +1,50 @@
 // FamilyTripAI — Cloudflare Worker
 // Serves the SPA HTML and handles /chat by calling Groq API directly.
 
+// ─── Model configuration ─────────────────────────────────────────────────────
+// Centralised so the model is changed in one place. CHAT_MODEL drives the
+// agent's reasoning/itinerary turns; SEARCH_MODEL backs the structured
+// browsing extraction (Trips/Prices/For Me). Kept on the fast instant model by
+// default to stay under the free-tier tokens-per-minute cap.
+const CHAT_MODEL = 'llama-3.1-8b-instant';
+const SEARCH_MODEL = 'llama-3.1-8b-instant';
+
+// ─── Shared fetch helper ─────────────────────────────────────────────────────
+// External data APIs (search, geocoding, weather, currency) are flaky and can
+// hang. Wrap them with a timeout (via AbortController) and a couple of retries
+// with exponential backoff so a single slow/failed upstream doesn't break a tool.
+async function fetchWithRetry(url, options = {}, { timeoutMs = 8000, retries = 2 } = {}) {
+  let lastErr;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      // Retry transient upstream errors; return everything else to the caller.
+      if (!res.ok && res.status >= 500 && attempt < retries) {
+        await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
+        continue;
+      }
+      return res;
+    } catch (e) {
+      clearTimeout(timer);
+      lastErr = e;
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, 400 * Math.pow(2, attempt)));
+        continue;
+      }
+    }
+  }
+  throw lastErr || new Error('Request failed');
+}
+
 // ─── Tool implementations (all async, using fetch) ───────────────────────────
 
 async function toolWebSearch(query, maxResults = 5) {
   try {
     const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`;
-    const res = await fetch(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
+    const res = await fetchWithRetry(url, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
     const data = await res.json();
 
     const lines = [];
@@ -36,14 +74,14 @@ async function toolWebSearch(query, maxResults = 5) {
 async function toolWeather(location, days = 7) {
   try {
     const geoUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
-    const geoRes = await fetch(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
+    const geoRes = await fetchWithRetry(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
     const geoData = await geoRes.json();
     if (!geoData || geoData.length === 0) return `Location "${location}" not found.`;
 
     const { lat, lon, display_name } = geoData[0];
     const forecastDays = Math.min(parseInt(days) || 7, 16);
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto&forecast_days=${forecastDays}`;
-    const wRes = await fetch(weatherUrl);
+    const wRes = await fetchWithRetry(weatherUrl);
     const wData = await wRes.json();
     const daily = wData.daily;
 
@@ -115,14 +153,14 @@ async function toolCurrency(from, to) {
   const f = from.toUpperCase();
   const t = to.toUpperCase();
   try {
-    const res = await fetch(`https://open.er-api.com/v6/latest/${f}`);
+    const res = await fetchWithRetry(`https://open.er-api.com/v6/latest/${f}`);
     const data = await res.json();
     const rate = data.rates && data.rates[t];
     if (rate == null) throw new Error('rate unavailable');
     return `1 ${f} = ${rate} ${t} (live mid-market rate)`;
   } catch (e1) {
     try {
-      const res2 = await fetch(`https://api.frankfurter.dev/v1/latest?base=${f}&symbols=${t}`);
+      const res2 = await fetchWithRetry(`https://api.frankfurter.dev/v1/latest?base=${f}&symbols=${t}`);
       const data2 = await res2.json();
       const rate2 = data2.rates && data2.rates[t];
       if (rate2 == null) throw new Error('rate unavailable');
@@ -416,7 +454,7 @@ Today's date: ${today}${profileContext}`;
 
   const callGroq = async (msgs, useTools) => {
     const body = {
-      model: 'llama-3.1-8b-instant',
+      model: CHAT_MODEL,
       messages: msgs,
       max_tokens: 1024
     };
@@ -601,7 +639,7 @@ async function runSearch(category, params, apiKey, profile) {
 
   const askForJSON = async (prompt) => {
     const body = {
-      model: 'llama-3.1-8b-instant',
+      model: SEARCH_MODEL,
       messages: [
         { role: 'system', content: 'You are a travel data assistant. Reply with ONLY valid JSON matching the requested shape — no markdown fences, no commentary.' },
         { role: 'user', content: prompt }
@@ -701,6 +739,7 @@ const HTML = `<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>FamilyTripAI</title>
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"><\/script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"><\/script>
   <script src="https://cdn.jsdelivr.net/npm/globe.gl"><\/script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -2788,9 +2827,23 @@ const HTML = `<!DOCTYPE html>
 <script>
   if (typeof marked !== 'undefined' && marked.setOptions) marked.setOptions({ breaks: true });
 
+  // Model output (and any web-search text it echoes back) is untrusted, so the
+  // rendered HTML is always run through DOMPurify before it touches innerHTML.
+  // This is the single chokepoint for all bot/markdown rendering — keep it that way.
+  function sanitizeHtml(html) {
+    if (typeof DOMPurify !== 'undefined' && DOMPurify.sanitize) {
+      return DOMPurify.sanitize(html, {
+        ADD_ATTR: ['target', 'rel'],
+        FORBID_TAGS: ['style', 'form', 'input', 'button'],
+        FORBID_ATTR: ['onerror', 'onload', 'onclick', 'style']
+      });
+    }
+    return html;
+  }
+
   function mdParse(text) {
     if (typeof marked !== 'undefined' && marked.parse) {
-      try { return marked.parse(text == null ? '' : text); } catch (_) {}
+      try { return sanitizeHtml(marked.parse(text == null ? '' : text)); } catch (_) {}
     }
     return escHtml(text == null ? '' : text).replace(/\\n/g, '<br>');
   }
