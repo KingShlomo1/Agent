@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agent",
+  "compatibility_date": "2026-05-18",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "static"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
