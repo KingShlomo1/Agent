@@ -1,6 +1,54 @@
 // FamilyTripAI — Cloudflare Worker
 // Serves the SPA HTML and handles /chat by calling Groq API directly.
 
+const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+// Small in-isolate TTL cache. Cloudflare reuses a Worker isolate across many
+// requests, so memoising identical geocode / weather / FX lookups here avoids
+// hammering the free public APIs (and their rate limits) with repeat calls.
+// It's deliberately tiny and dependency-free so it also runs under `node --test`.
+const _memo = new Map();
+async function memoJson(key, ttlMs, fetcher) {
+  const now = Date.now();
+  const hit = _memo.get(key);
+  if (hit && hit.exp > now) return hit.val;
+  const val = await fetcher();
+  _memo.set(key, { val, exp: now + ttlMs });
+  // Bound the cache so a long-lived isolate can't grow without limit (FIFO).
+  if (_memo.size > 200) _memo.delete(_memo.keys().next().value);
+  return val;
+}
+
+// Parse a single line of a Groq (OpenAI-style) SSE stream.
+// Returns the decoded JSON object, the string '[DONE]', or null for keep-alives.
+function extractSSEData(line) {
+  const t = (line || '').trim();
+  if (!t || !t.startsWith('data:')) return null;
+  const payload = t.slice(5).trim();
+  if (payload === '[DONE]') return '[DONE]';
+  try { return JSON.parse(payload); } catch (_) { return null; }
+}
+
+// Booking deep-links, shared by the chat tools and the /search browsing API so
+// the two never drift apart.
+function buildFlightLinks(origin, destination, departureDate, returnDate = '', passengers = 1) {
+  return {
+    'Google Flights': `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(origin)}+to+${encodeURIComponent(destination)}+${departureDate}`,
+    'Skyscanner': `https://www.skyscanner.com/transport/flights/${encodeURIComponent(String(origin).toLowerCase())}/${encodeURIComponent(String(destination).toLowerCase())}/${(departureDate || '').replace(/-/g, '')}`,
+    'Kayak': `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departureDate}${returnDate ? '/' + returnDate : ''}/${passengers}adults`
+  };
+}
+
+function buildHotelLinks(location, checkin, checkout, guests = 2, rooms = 1) {
+  return {
+    'Booking.com': `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`,
+    'Airbnb': `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`,
+    'Hotels.com': `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`
+  };
+}
+
 // ─── Tool implementations (all async, using fetch) ───────────────────────────
 
 async function toolWebSearch(query, maxResults = 5) {
@@ -36,15 +84,17 @@ async function toolWebSearch(query, maxResults = 5) {
 async function toolWeather(location, days = 7) {
   try {
     const geoUrl = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(location)}&format=json&limit=1`;
-    const geoRes = await fetch(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } });
-    const geoData = await geoRes.json();
+    // Place coordinates don't change — cache geocoding for a day.
+    const geoData = await memoJson(`geo:${location.toLowerCase()}`, 86400000, () =>
+      fetch(geoUrl, { headers: { 'User-Agent': 'FamilyTripAI/1.0' } }).then(r => r.json()));
     if (!geoData || geoData.length === 0) return `Location "${location}" not found.`;
 
     const { lat, lon, display_name } = geoData[0];
     const forecastDays = Math.min(parseInt(days) || 7, 16);
     const weatherUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_mean,weathercode&timezone=auto&forecast_days=${forecastDays}`;
-    const wRes = await fetch(weatherUrl);
-    const wData = await wRes.json();
+    // Forecasts shift slowly — a short cache smooths repeat lookups in one chat.
+    const wData = await memoJson(`wx:${lat},${lon}:${forecastDays}`, 1800000, () =>
+      fetch(weatherUrl).then(r => r.json()));
     const daily = wData.daily;
 
     const wmo = {
@@ -72,16 +122,13 @@ async function toolWeather(location, days = 7) {
 }
 
 async function toolFlights(origin, destination, departureDate, returnDate = '', passengers = 1) {
-  const googleUrl = `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(origin)}+to+${encodeURIComponent(destination)}+${departureDate}`;
-  const skyscannerUrl = `https://www.skyscanner.com/transport/flights/${encodeURIComponent(origin.toLowerCase())}/${encodeURIComponent(destination.toLowerCase())}/${(departureDate || '').replace(/-/g, '')}`;
-  const kayakUrl = `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departureDate}${returnDate ? '/' + returnDate : ''}/${passengers}adults`;
+  const links = buildFlightLinks(origin, destination, departureDate, returnDate, passengers);
 
   let result = `Flights: ${origin} to ${destination}\n`;
   result += `Departure: ${departureDate}${returnDate ? ' | Return: ' + returnDate : ''} | Passengers: ${passengers}\n\n`;
   result += `Book here:\n`;
-  result += `- Google Flights: ${googleUrl}\n`;
-  result += `- Skyscanner: ${skyscannerUrl}\n`;
-  result += `- Kayak: ${kayakUrl}\n\n`;
+  for (const [name, url] of Object.entries(links)) result += `- ${name}: ${url}\n`;
+  result += `\n`;
 
   const searchResult = await toolWebSearch(`cheap flights ${origin} to ${destination} ${departureDate} ${passengers} passengers family`, 4);
   result += `Search results:\n${searchResult}`;
@@ -89,16 +136,13 @@ async function toolFlights(origin, destination, departureDate, returnDate = '', 
 }
 
 async function toolHotels(location, checkin, checkout, guests = 2, rooms = 1) {
-  const bookingUrl = `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`;
-  const airbnbUrl = `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`;
-  const hotelsUrl = `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`;
+  const links = buildHotelLinks(location, checkin, checkout, guests, rooms);
 
   let result = `Hotels in ${location}\n`;
   result += `Check-in: ${checkin} | Check-out: ${checkout} | Guests: ${guests} | Rooms: ${rooms}\n\n`;
   result += `Book here:\n`;
-  result += `- Booking.com: ${bookingUrl}\n`;
-  result += `- Airbnb: ${airbnbUrl}\n`;
-  result += `- Hotels.com: ${hotelsUrl}\n\n`;
+  for (const [name, url] of Object.entries(links)) result += `- ${name}: ${url}\n`;
+  result += `\n`;
 
   const searchResult = await toolWebSearch(`best family hotels ${location} kids amenities pool`, 4);
   result += `Search results:\n${searchResult}`;
@@ -115,15 +159,16 @@ async function toolCurrency(from, to) {
   const f = from.toUpperCase();
   const t = to.toUpperCase();
   try {
-    const res = await fetch(`https://open.er-api.com/v6/latest/${f}`);
-    const data = await res.json();
+    // Rates move at most a few times a day — cache for an hour.
+    const data = await memoJson(`fx:${f}`, 3600000, () =>
+      fetch(`https://open.er-api.com/v6/latest/${f}`).then(r => r.json()));
     const rate = data.rates && data.rates[t];
     if (rate == null) throw new Error('rate unavailable');
     return `1 ${f} = ${rate} ${t} (live mid-market rate)`;
   } catch (e1) {
     try {
-      const res2 = await fetch(`https://api.frankfurter.dev/v1/latest?base=${f}&symbols=${t}`);
-      const data2 = await res2.json();
+      const data2 = await memoJson(`fx2:${f}:${t}`, 3600000, () =>
+        fetch(`https://api.frankfurter.dev/v1/latest?base=${f}&symbols=${t}`).then(r => r.json()));
       const rate2 = data2.rates && data2.rates[t];
       if (rate2 == null) throw new Error('rate unavailable');
       return `1 ${f} = ${rate2} ${t} (European Central Bank)`;
@@ -336,7 +381,7 @@ function toolStatusText(fnName, args) {
     case 'search_flights':      return `Looking up flights from ${args.origin || '?'} to ${args.destination || '?'}…`;
     case 'search_hotels':       return `Finding hotels in ${args.location || 'your destination'}…`;
     case 'destination_image':   return `Generating a photo of ${args.location || 'your destination'}…`;
-    case 'currency_info':       return `Checking the ${args.from_currency || '?'} → ${args.to_currency || '?'} exchange rate…`;
+    case 'currency_info':       return `Checking the ${args.from || '?'} → ${args.to || '?'} exchange rate…`;
     case 'find_activities':     return `Finding things to do in ${args.location || 'your destination'}…`;
     case 'find_restaurants':    return `Looking for family-friendly restaurants in ${args.location || 'your destination'}…`;
     case 'get_travel_tips':     return `Gathering travel tips for ${args.destination || 'your destination'}…`;
@@ -426,7 +471,7 @@ Today's date: ${today}${profileContext}`;
     }
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const resp = await fetch(GROQ_URL, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -458,9 +503,91 @@ Today's date: ${today}${profileContext}`;
     }
   };
 
-  // Reveal the final answer gradually (ChatGPT-style typewriter) by emitting
-  // it in small word-chunks with short pauses, instead of dumping it all at once.
-  const streamOutFinalAnswer = async (text) => {
+  // Streaming variant: asks Groq for an SSE stream and forwards each content
+  // delta to `onDelta` as it arrives, so the user sees the answer appear in real
+  // time (genuine token streaming, not a replayed typewriter). Tool-call deltas
+  // are reassembled by index and returned for the agent loop to execute.
+  // With tool_choice 'auto' a single turn is either tool calls OR prose, never
+  // interleaved, so forwarding content deltas live is safe; the final `done`
+  // event still carries the authoritative full text the client re-renders from.
+  const callGroqStream = async (msgs, onDelta) => {
+    const body = {
+      model: 'llama-3.1-8b-instant',
+      messages: msgs,
+      max_tokens: 1024,
+      tools: TOOLS_DEF,
+      tool_choice: 'auto',
+      stream: true
+    };
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const resp = await fetch(GROQ_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify(body)
+      });
+
+      if (!resp.ok) {
+        const text = await resp.text();
+        let data; try { data = JSON.parse(text); } catch (_) { data = null; }
+        const code = data && data.error && data.error.code;
+        if (resp.status === 429 && attempt < 2) {
+          const match = /try again in ([\d.]+)s/i.exec(text);
+          const waitMs = match ? Math.min(parseFloat(match[1]) * 1000 + 500, 20000) : 5000;
+          await sleep(waitMs);
+          continue;
+        }
+        const err = new Error(`Groq API error ${resp.status}: ${text}`);
+        err.code = code;
+        err.status = resp.status;
+        throw err;
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let content = '';
+      const toolCalls = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let nl;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl);
+          buf = buf.slice(nl + 1);
+          const payload = extractSSEData(line);
+          if (!payload || payload === '[DONE]') continue;
+          const delta = payload.choices && payload.choices[0] && payload.choices[0].delta;
+          if (!delta) continue;
+          if (delta.content) {
+            content += delta.content;
+            if (onDelta) await onDelta(delta.content);
+          }
+          if (delta.tool_calls) {
+            for (const tc of delta.tool_calls) {
+              const i = tc.index || 0;
+              if (!toolCalls[i]) toolCalls[i] = { id: '', type: 'function', function: { name: '', arguments: '' } };
+              if (tc.id) toolCalls[i].id = tc.id;
+              if (tc.function && tc.function.name) toolCalls[i].function.name += tc.function.name;
+              if (tc.function && tc.function.arguments) toolCalls[i].function.arguments += tc.function.arguments;
+            }
+          }
+        }
+      }
+
+      return { content, tool_calls: toolCalls.filter(Boolean) };
+    }
+  };
+
+  // Reveal our OWN synthesised text (fallback summaries, error nudges) gradually,
+  // ChatGPT-style. Real model output already streams live via callGroqStream, so
+  // this is only used for the few strings the agent composes itself.
+  const emitText = async (text) => {
     if (!emit || !text) return;
     const pieces = text.match(/\S+\s*|\s+/g) || [text];
     let buf = '';
@@ -504,9 +631,10 @@ Today's date: ${today}${profileContext}`;
   };
 
   for (let iter = 0; iter < 12; iter++) {
-    let data;
+    let turn;
     try {
-      data = await callGroq(messages, true);
+      // Forward content deltas to the client live as they're generated.
+      turn = await callGroqStream(messages, (delta) => emit && emit({ type: 'chunk', text: delta }));
     } catch (e) {
       // The model occasionally emits malformed function-call syntax as plain text,
       // which Groq rejects as tool_use_failed. Retry once without tools so the
@@ -515,29 +643,34 @@ Today's date: ${today}${profileContext}`;
         const fallback = await callGroq(messages, false);
         const fallbackMsg = fallback.choices[0].message;
         const text = await ensureFinalText(fallbackMsg.content || '');
-        await streamOutFinalAnswer(text);
+        await emitText(text);
         return { response: text, tools_used: toolsUsed, images };
       }
       throw e;
     }
 
-    const msg = data.choices[0].message;
+    const toolCalls = turn.tool_calls;
 
-    if (!msg.tool_calls || msg.tool_calls.length === 0) {
-      const text = await ensureFinalText(msg.content || '');
-      await streamOutFinalAnswer(text);
+    if (!toolCalls || toolCalls.length === 0) {
+      // No tools: this turn is the final answer, already streamed live above.
+      if (turn.content && turn.content.trim()) {
+        return { response: turn.content, tools_used: toolsUsed, images };
+      }
+      // Empty answer — fall back to a nudge / synthesised summary and stream that.
+      const text = await ensureFinalText('');
+      await emitText(text);
       return { response: text, tools_used: toolsUsed, images };
     }
 
     // Append assistant message with tool calls
     messages.push({
       role: 'assistant',
-      content: msg.content || '',
-      tool_calls: msg.tool_calls
+      content: turn.content || '',
+      tool_calls: toolCalls
     });
 
     // Execute each tool call, narrating what the agent is doing as it goes
-    for (const tc of msg.tool_calls) {
+    for (const tc of toolCalls) {
       const fnName = tc.function.name;
       let args = {};
       try { args = JSON.parse(tc.function.arguments); } catch (_) {}
@@ -590,7 +723,7 @@ Today's date: ${today}${profileContext}`;
   // Max iterations reached — return last assistant content if any
   const lastAssistant = [...messages].reverse().find(m => m.role === 'assistant' && m.content);
   const finalText = await ensureFinalText(lastAssistant ? lastAssistant.content : '');
-  await streamOutFinalAnswer(finalText);
+  await emitText(finalText);
   return { response: finalText, tools_used: toolsUsed, images };
 }
 
@@ -611,7 +744,7 @@ async function runSearch(category, params, apiKey, profile) {
     };
 
     for (let attempt = 0; attempt < 3; attempt++) {
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      const resp = await fetch(GROQ_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
         body: JSON.stringify(body)
@@ -642,11 +775,7 @@ async function runSearch(category, params, apiKey, profile) {
 
   if (category === 'flights') {
     const { origin, destination, departure_date, return_date = '', passengers = 1 } = params;
-    links = {
-      'Google Flights': `https://www.google.com/travel/flights?q=flights+from+${encodeURIComponent(origin)}+to+${encodeURIComponent(destination)}+${departure_date}`,
-      'Skyscanner': `https://www.skyscanner.com/transport/flights/${encodeURIComponent(String(origin).toLowerCase())}/${encodeURIComponent(String(destination).toLowerCase())}/${(departure_date || '').replace(/-/g, '')}`,
-      'Kayak': `https://www.kayak.com/flights/${encodeURIComponent(origin)}-${encodeURIComponent(destination)}/${departure_date}${return_date ? '/' + return_date : ''}/${passengers}adults`
-    };
+    links = buildFlightLinks(origin, destination, departure_date, return_date, passengers);
     prompt = `Generate 6 realistic, varied example flight options from ${origin} to ${destination}, departing ${departure_date}${return_date ? ', returning ' + return_date : ''}, for ${passengers} passenger(s).
 These are illustrative planning ESTIMATES (not live bookings) — vary airlines (use real airlines that plausibly fly this route), prices, durations, layover cities and stop counts realistically.
 Write each "notes" field like a real flight-search result would: cabin class, baggage allowance, on-time rating, legroom, loyalty program, red-eye/overnight, etc. Only mention kids/family perks where genuinely relevant (e.g. a long-haul red-eye) — most notes should be general, not family-themed.${familyNote ? ' Context on the traveller: ' + familyNote : ''}
@@ -654,11 +783,7 @@ Reply with ONLY this JSON shape:
 {"items": [{"airline": "string", "price_usd": number, "duration": "e.g. 9h 25m", "stops": number, "departure_time": "e.g. 08:40", "arrival_time": "e.g. 17:05", "notes": "short, varied, realistic note"}]}`;
   } else if (category === 'hotels') {
     const { location, checkin, checkout, guests = 2, rooms = 1 } = params;
-    links = {
-      'Booking.com': `https://www.booking.com/searchresults.html?ss=${encodeURIComponent(location)}&checkin=${checkin}&checkout=${checkout}&group_adults=${guests}&no_rooms=${rooms}`,
-      'Airbnb': `https://www.airbnb.com/s/${encodeURIComponent(location)}/homes?checkin=${checkin}&checkout=${checkout}&adults=${guests}`,
-      'Hotels.com': `https://www.hotels.com/search.do?q-destination=${encodeURIComponent(location)}&q-check-in=${checkin}&q-check-out=${checkout}&q-rooms=${rooms}&q-room-0-adults=${guests}`
-    };
+    links = buildHotelLinks(location, checkin, checkout, guests, rooms);
     prompt = `Generate 6 realistic, varied example hotel options in ${location} for check-in ${checkin}, check-out ${checkout}, ${guests} guests, ${rooms} room(s).
 These are illustrative planning ESTIMATES (not live bookings) — vary names, neighbourhoods, star ratings, prices and amenities realistically for this destination (mix of hotels, apart-hotels, resorts).
 Pick amenities from a broad realistic mix (pool, gym, spa, free breakfast, parking, kitchenette, kids club, business centre, pet-friendly, beach access, etc.) — not every hotel needs to be family-themed.${familyNote ? ' Context on the traveller: ' + familyNote : ''}
@@ -4128,4 +4253,15 @@ export default {
       headers: { ...CORS, 'Content-Type': 'text/plain' }
     });
   }
+};
+
+// Named exports for unit testing the pure helpers (ignored by the Workers
+// runtime, which only uses the default export above).
+export {
+  extractSSEData,
+  toolStatusText,
+  memoJson,
+  buildFlightLinks,
+  buildHotelLinks,
+  toolDestinationImage
 };
