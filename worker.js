@@ -1811,6 +1811,32 @@ const HTML = `<!DOCTYPE html>
       color: var(--accent);
     }
 
+    /* Chat toolbar — appears once a conversation exists */
+    .chat-toolbar {
+      width: 100%;
+      max-width: 820px;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 12px;
+      padding: 12px 20px 0;
+    }
+    .chat-restored-note { font-size: 0.76rem; color: var(--text-muted); }
+    .new-chat-btn {
+      background: var(--bg-panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-main);
+      font-family: 'Montserrat', system-ui, sans-serif;
+      font-size: 0.76rem;
+      font-weight: 600;
+      padding: 6px 12px;
+      cursor: pointer;
+      transition: border-color 0.2s ease, color 0.2s ease;
+      white-space: nowrap;
+    }
+    .new-chat-btn:hover { border-color: var(--accent); color: var(--text-bright); }
+
     /* Chat body */
     .chat-body {
       flex: 1;
@@ -2498,8 +2524,8 @@ const HTML = `<!DOCTYPE html>
         <div class="dash-section-label">Jump back in</div>
         <div class="dash-quick-row">
           <div class="dash-quick-card" onclick="switchTab('chat')">
-            <h3>Plan a trip</h3>
-            <p>Chat with the AI and get a full day-by-day family itinerary.</p>
+            <h3 id="dash-chat-title">Plan a trip</h3>
+            <p id="dash-chat-desc">Chat with the AI and get a full day-by-day family itinerary.</p>
           </div>
           <div class="dash-quick-card" onclick="switchTab('trips')">
             <h3>Browse trips</h3>
@@ -2528,6 +2554,10 @@ const HTML = `<!DOCTYPE html>
   <!-- TAB: Chat -->
   <div class="tab-panel" id="tab-chat" data-tab="chat">
     <div class="chat-body">
+      <div class="chat-toolbar hidden" id="chat-toolbar">
+        <span class="chat-restored-note" id="chat-restored-note"></span>
+        <button class="new-chat-btn" onclick="newChat()">+ New chat</button>
+      </div>
       <div id="messages">
         <div class="welcome" id="welcome">
           <div class="welcome-logo">
@@ -3278,8 +3308,9 @@ const HTML = `<!DOCTYPE html>
     document.getElementById('user-avatar').textContent = first[0].toUpperCase();
     document.getElementById('user-name-display').textContent = first;
 
-    if (profile && name !== 'Guest') {
-      document.getElementById('welcome-heading').textContent = 'Welcome back, ' + first + '! Where is your family headed?';
+    const welcomeHeading = document.getElementById('welcome-heading');
+    if (welcomeHeading && profile && name !== 'Guest') {
+      welcomeHeading.textContent = 'Welcome back, ' + first + '! Where is your family headed?';
     }
 
     const dashH = document.getElementById('dash-greeting-h');
@@ -3289,11 +3320,12 @@ const HTML = `<!DOCTYPE html>
       ? ('Planning from ' + profile.home_city + ' — here\\'s a quick look at what\\'s next.')
       : 'Here\\'s a quick look at what FamilyTripAI can plan for you next.';
     initDashboard();
+    refreshDashChatCard();
 
     // Profile chips
     const chipsEl = document.getElementById('welcome-chips');
-    chipsEl.innerHTML = '';
-    if (profile) {
+    if (chipsEl) chipsEl.innerHTML = '';
+    if (chipsEl && profile) {
       const parts = [];
       if (profile.adults) parts.push(profile.adults + ' adult' + (profile.adults !== 1 ? 's' : ''));
       if (profile.children) parts.push(profile.children + ' child' + (profile.children !== 1 ? 'ren' : ''));
@@ -3367,6 +3399,109 @@ const HTML = `<!DOCTYPE html>
   const inputEl     = document.getElementById('user-input');
   const sendBtn     = document.getElementById('send-btn');
   let history = [];
+
+  // ── Chat persistence — keep the conversation across page reloads ─────────
+  const CHAT_KEY = 'familytrip_chat';
+  let transcript = [];
+  const WELCOME_HTML = messagesEl.innerHTML;
+
+  function saveChat() {
+    try {
+      localStorage.setItem(CHAT_KEY, JSON.stringify({ messages: transcript.slice(-40), updated: Date.now() }));
+    } catch (_) {}
+  }
+
+  function loadChat() {
+    try {
+      const data = JSON.parse(localStorage.getItem(CHAT_KEY) || 'null');
+      return (data && Array.isArray(data.messages) && data.messages.length) ? data : null;
+    } catch (_) { return null; }
+  }
+
+  function timeAgo(ts) {
+    const mins = Math.round((Date.now() - ts) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return mins + ' min ago';
+    const hours = Math.round(mins / 60);
+    if (hours < 24) return hours + (hours === 1 ? ' hour ago' : ' hours ago');
+    const days = Math.round(hours / 24);
+    return days + (days === 1 ? ' day ago' : ' days ago');
+  }
+
+  function updateChatToolbar(updated) {
+    const bar = document.getElementById('chat-toolbar');
+    const note = document.getElementById('chat-restored-note');
+    if (!bar) return;
+    bar.classList.toggle('hidden', !transcript.length);
+    if (note) note.textContent = (transcript.length && updated)
+      ? 'Conversation restored — last active ' + timeAgo(updated) : '';
+  }
+
+  function refreshDashChatCard() {
+    const title = document.getElementById('dash-chat-title');
+    const desc = document.getElementById('dash-chat-desc');
+    if (!title || !desc) return;
+    let lastUser = null;
+    for (let i = transcript.length - 1; i >= 0; i--) {
+      if (transcript[i].role === 'user') { lastUser = transcript[i]; break; }
+    }
+    if (lastUser) {
+      const snippet = lastUser.content.length > 70 ? lastUser.content.slice(0, 67) + '…' : lastUser.content;
+      title.textContent = 'Continue planning';
+      desc.textContent = '"' + snippet + '" — pick up where you left off.';
+    } else {
+      title.textContent = 'Plan a trip';
+      desc.textContent = 'Chat with the AI and get a full day-by-day family itinerary.';
+    }
+  }
+
+  // Rebuild a finished assistant bubble (no thinking steps) from saved data.
+  function renderBotMessage(text, images, tools) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg bot';
+    const avatar = document.createElement('div');
+    avatar.className = 'msg-avatar';
+    avatar.textContent = 'AI';
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    const content = document.createElement('div');
+    content.className = 'bot-content';
+    content.innerHTML = mdParse(text || '');
+    bubble.appendChild(content);
+    wrap.appendChild(avatar);
+    wrap.appendChild(bubble);
+    messagesEl.appendChild(wrap);
+    if (images && images.length) addImageToBubble(bubble, images[0]);
+    addToolTags(bubble, (tools || []).map(function (t) { return { tool: t }; }));
+  }
+
+  function restoreChat() {
+    const data = loadChat();
+    if (!data) { updateChatToolbar(); refreshDashChatCard(); return; }
+    removeWelcome();
+    transcript = data.messages;
+    history = [];
+    transcript.forEach(function (m) {
+      if (m.role === 'user') addUser(m.content);
+      else renderBotMessage(m.content, m.images, m.tools);
+      history.push({ role: m.role, content: m.content });
+    });
+    if (history.length > 20) history = history.slice(-20);
+    updateChatToolbar(data.updated);
+    refreshDashChatCard();
+    scroll();
+  }
+
+  function newChat() {
+    transcript = [];
+    history = [];
+    try { localStorage.removeItem(CHAT_KEY); } catch (_) {}
+    messagesEl.innerHTML = WELCOME_HTML;
+    if (profile) initApp();
+    updateChatToolbar();
+    refreshDashChatCard();
+    inputEl.focus();
+  }
 
   function fill(el) {
     inputEl.value = el.textContent.trim();
@@ -3578,6 +3713,17 @@ const HTML = `<!DOCTYPE html>
       history.push({ role: 'user', content: text });
       history.push({ role: 'assistant', content: raw });
       if (history.length > 20) history = history.slice(-20);
+
+      transcript.push({ role: 'user', content: text });
+      transcript.push({
+        role: 'assistant',
+        content: raw,
+        images: images || [],
+        tools: (toolsUsed || []).map(function (t) { return t.tool; })
+      });
+      saveChat();
+      updateChatToolbar();
+      refreshDashChatCard();
     } catch (err) {
       settleThinking(thinking);
       content.innerHTML = mdParse('**Network error:** ' + escHtml(err.message));
@@ -3986,6 +4132,7 @@ const HTML = `<!DOCTYPE html>
     } else {
       showPage('page-login');
     }
+    restoreChat();
     updateKeyStatus();
   })();
 <\/script>
