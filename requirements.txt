@@ -1,4 +1,5 @@
 groq
+openai
 duckduckgo-search
 requests
 fastapi

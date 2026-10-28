@@ -1525,13 +1525,29 @@
   }
 
   // ── API key ───────────────────────────────────────────────────────────────
+  let requiresKey = true;
+
+  async function loadServerConfig() {
+    try {
+      const res = await fetch('/config');
+      const data = await res.json();
+      requiresKey = data.requires_key !== false;
+    } catch (err) {
+      requiresKey = true;
+    }
+    updateKeyStatus();
+  }
+
   function getKey() { return localStorage.getItem('groq_api_key') || ''; }
 
   function updateKeyStatus() {
     const k  = getKey();
     const el = document.getElementById('key-status');
     if (!el) return;
-    if (k && k.startsWith('gsk_')) {
+    if (!requiresKey) {
+      el.textContent = 'AI connected';
+      el.className = 'key-pill active';
+    } else if (k && k.startsWith('gsk_')) {
       el.textContent = 'Key active';
       el.className = 'key-pill active';
     } else {
@@ -1661,7 +1677,7 @@
     if (!text) return;
 
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) { openSettings(); return; }
+    if (requiresKey && (!key || !key.startsWith('gsk_'))) { openSettings(); return; }
 
     inputEl.value = '';
     inputEl.style.height = 'auto';
@@ -1837,7 +1853,7 @@
     evt.preventDefault();
     const form = evt.target;
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) { openSettings(); return false; }
+    if (requiresKey && (!key || !key.startsWith('gsk_'))) { openSettings(); return false; }
 
     const params = {};
     new FormData(form).forEach((v, k) => { params[k] = v; });
@@ -1910,7 +1926,7 @@
   // ── For Me — personalised recommendations ────────────────────────────────
   async function loadRecommendations() {
     const key = getKey();
-    if (!key || !key.startsWith('gsk_')) { openSettings(); return; }
+    if (requiresKey && (!key || !key.startsWith('gsk_'))) { openSettings(); return; }
 
     const btn = document.getElementById('forme-btn');
     const grid = document.getElementById('forme-results');
@@ -1987,6 +2003,7 @@
     if (profile) { initApp(); showPage('page-app'); }
     else { showPage('page-login'); }
     updateKeyStatus();
+    loadServerConfig();
   })();
 </script>
 </body>

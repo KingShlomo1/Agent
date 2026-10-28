@@ -1,5 +1,7 @@
 import json
+import os
 from groq import Groq
+from openai import OpenAI
 from tools import TOOL_MAP
 
 TOOLS = [
@@ -178,14 +180,27 @@ Format responses with clear headers and sections. Be thorough and practical.
 Today's date: 2026-05-18"""
 
 
+def _resolve_client(api_key: str):
+    """Pick an AI backend: a CLIProxyAPI instance if configured, else Groq directly."""
+    cliproxy_base_url = os.environ.get("CLIPROXY_BASE_URL", "").strip().rstrip("/")
+    if cliproxy_base_url:
+        client = OpenAI(
+            base_url=f"{cliproxy_base_url}/v1",
+            api_key=os.environ.get("CLIPROXY_API_KEY", "cliproxy"),
+        )
+        model = os.environ.get("CLIPROXY_MODEL", "gemini-2.5-flash")
+        return client, model
+    return Groq(api_key=api_key), "llama-3.3-70b-versatile"
+
+
 def run_agent(messages: list, api_key: str) -> tuple:
-    client = Groq(api_key=api_key)
+    client, model = _resolve_client(api_key)
     full_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
     tools_used = []
 
     while True:
         response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
+            model=model,
             messages=full_messages,
             tools=TOOLS,
             tool_choice="auto",
